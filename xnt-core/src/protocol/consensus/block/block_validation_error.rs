@@ -88,6 +88,9 @@ pub enum BlockValidationError {
     ///   2.l) restrict number of announcements.
     #[error("number of announcements may not be too large")]
     TooManyAnnouncements,
+    /// 2.n
+    #[error("Transaction mutator set must match parent block")]
+    TransactionMutatorSetMismatch,
 }
 
 impl From<RemovalRecordListUnpackError> for BlockValidationError {
