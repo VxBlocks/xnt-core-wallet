@@ -668,6 +668,11 @@ impl Block {
             }
         }
 
+        // 2.m)
+        if msa_before.hash() != self.body().transaction_kernel.mutator_set_hash {
+            return Err(BlockValidationError::TransactionMutatorSetMismatch);
+        }
+        
         // 2.c)
         let mut absolute_index_sets = inputs
             .iter()
