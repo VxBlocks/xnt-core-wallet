@@ -261,7 +261,7 @@ impl Sanction for NegativePeerSanction {
             NegativePeerSanction::BatchBlocksRequestTooManyDigests => -50,
             NegativePeerSanction::FishyPowEvolutionChallengeResponse => -51,
             NegativePeerSanction::FishyDifficultiesChallengeResponse => -51,
-            NegativePeerSanction::ReceivedSyncChallenge => -50,
+            NegativePeerSanction::ReceivedSyncChallenge => -10,
             NegativePeerSanction::UnrelayableTransaction => -10,
         }
     }
@@ -630,6 +630,11 @@ pub struct MutablePeerState {
     ///
     /// Used to prevent issuing multiple sync challenges in short succession.
     pub(crate) successful_sync_challenge_response_time: Option<Timestamp>,
+
+    /// Timestamp of the last `SyncChallenge` we received from this peer.
+    /// Used on the receiver side to mirror the sender's cooldown so compliant
+    /// peers (one challenge per `SYNC_CHALLENGE_COOLDOWN`) accrue no penalty.
+    pub(crate) last_received_sync_challenge_time: Option<Timestamp>,
 }
 
 impl MutablePeerState {
@@ -639,6 +644,7 @@ impl MutablePeerState {
             fork_reconciliation_blocks: vec![],
             sync_challenge: None,
             successful_sync_challenge_response_time: None,
+            last_received_sync_challenge_time: None,
         }
     }
 }

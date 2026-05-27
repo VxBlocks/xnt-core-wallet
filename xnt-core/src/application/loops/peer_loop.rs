@@ -771,11 +771,20 @@ impl PeerLoopHandler {
 
                     info!("Got sync challenge from {}", self.peer_address.ip());
 
-                    // Sync challenges are *always* punished to prevent a
-                    // malicious peer from spamming these, as they are expensive
-                    // to respond to.
-                    self.punish(NegativePeerSanction::ReceivedSyncChallenge)
-                        .await?;
+                    // Mirror the sender-side `SYNC_CHALLENGE_COOLDOWN` (10 min)
+                    // on the receiver: only punish if this peer challenges us
+                    // *again* before its own cooldown has elapsed. A compliant
+                    // peer obeying the protocol accrues zero penalty.
+                    const RX_SYNC_CHALLENGE_COOLDOWN: Timestamp = Timestamp::minutes(10);
+                    let now = self.now();
+                    let too_soon = peer_state_info
+                        .last_received_sync_challenge_time
+                        .is_some_and(|prev| now - prev < RX_SYNC_CHALLENGE_COOLDOWN);
+                    peer_state_info.last_received_sync_challenge_time = Some(now);
+                    if too_soon {
+                        self.punish(NegativePeerSanction::ReceivedSyncChallenge)
+                            .await?;
+                    }
 
                     let response = self
                         .global_state_lock
