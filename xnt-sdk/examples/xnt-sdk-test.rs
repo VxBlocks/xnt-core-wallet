@@ -629,7 +629,8 @@ fn test_tx() {
 
     println!("Proving...");
     let start = std::time::Instant::now();
-    let proven = xnt_built_transaction_prove(built);
+    let tip = xnt_rpc_chain_height(client).max(0) as u64;
+    let proven = xnt_built_transaction_prove(built, tip);
     let elapsed = start.elapsed();
     check!(proven, "prove");
 
@@ -954,7 +955,8 @@ fn test_tx_dctidh() {
 
     println!("Proving (mixed tx)...");
     let start = std::time::Instant::now();
-    let proven = xnt_built_transaction_prove(built);
+    let tip = xnt_rpc_chain_height(client).max(0) as u64;
+    let proven = xnt_built_transaction_prove(built, tip);
     let elapsed = start.elapsed();
     check!(proven, "prove");
 
@@ -1025,15 +1027,21 @@ fn test_tx_dctidh_multi() {
     let tip = client.chain_height().expect("height");
     ok!("height: {tip}");
 
-    // Collect spendable inputs for both keys (handle RPC errors gracefully)
-    let mut gen_inputs = match collect_spendable_inputs_for_key(&client, &gen_key, 15000, tip) {
+    // Collect spendable inputs for both keys (handle RPC errors gracefully).
+    // scan_from defaults to 0 (genesis); override via XNT_SCAN_FROM for mainnet
+    // (where pre-Xnt-hardfork blocks can be skipped, e.g. 15000).
+    let scan_from: u64 = std::env::var("XNT_SCAN_FROM")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    let mut gen_inputs = match collect_spendable_inputs_for_key(&client, &gen_key, scan_from, tip) {
         Ok(v) => v,
         Err(e) => {
             println!("[SKIP] collect Generation inputs failed: {e}");
             Vec::new()
         }
     };
-    let mut dctidh_inputs = match collect_spendable_inputs_for_key(&client, &dctidh_key, 15000, tip) {
+    let mut dctidh_inputs = match collect_spendable_inputs_for_key(&client, &dctidh_key, scan_from, tip) {
         Ok(v) => v,
         Err(e) => {
             println!("[SKIP] collect CTIDH inputs failed: {e}");
@@ -1106,8 +1114,16 @@ fn test_tx_dctidh_multi() {
 
     let mutator_set = get_mutator_set(&client).expect("mutator set");
     let ts = xnt_timestamp_now();
+    // Network drives the consensus-rule-set inference in prove() (post-fork
+    // => produce_v2). Override via XNT_NETWORK (e.g. "testnet-99").
+    let network: CoreNetwork = match std::env::var("XNT_NETWORK").as_deref() {
+        Ok("testnet") | Ok("testnet-0") => CoreNetwork::Testnet,
+        Ok("testnet-mock") => CoreNetwork::TestnetMock,
+        Ok("regtest") => CoreNetwork::RegTest,
+        _ => CoreNetwork::Main,
+    };
     let built = builder
-        .build(&mutator_set, ts, CoreNetwork::Main)
+        .build(&mutator_set, ts, network)
         .expect("build");
 
     // Print summary
@@ -1138,7 +1154,7 @@ fn test_tx_dctidh_multi() {
     println!("Proving (multi-input tx)...");
     let start = std::time::Instant::now();
     let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let proven = rt.block_on(built.prove()).expect("prove");
+    let proven = rt.block_on(built.prove(tip)).expect("prove");
     let elapsed = start.elapsed();
     if proven.has_proof_collection() {
         ok!("proven in {:.1}s", elapsed.as_secs_f64());

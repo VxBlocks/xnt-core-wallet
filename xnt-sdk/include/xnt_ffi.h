@@ -474,7 +474,8 @@ struct XntBuiltTransactionHandle *xnt_tx_builder_build(const struct XntTransacti
 // Prove the built transaction (creates ProofCollection)
 // This is a blocking operation that can take significant time and memory
 xnt_
-struct XntTransactionHandle *xnt_built_transaction_prove(const struct XntBuiltTransactionHandle *handle);
+struct XntTransactionHandle *xnt_built_transaction_prove(const struct XntBuiltTransactionHandle *handle,
+                                                         uint64_t tip_height);
 
 // Get transaction kernel bytes
 xnt_
