@@ -146,19 +146,61 @@ impl MergeWitness {
         triton_vm_job_queue: Arc<TritonVmJobQueue>,
         proof_job_options: TritonVmProofJobOptions,
     ) -> Result<Transaction> {
+        Self::merge_with_rule(
+            self,
+            triton_vm_job_queue,
+            proof_job_options,
+            crate::protocol::consensus::consensus_rule_set::ConsensusRuleSet::Xnt,
+        )
+        .await
+    }
+
+    /// Same as [`merge`] but routes through SingleProofV2 when the active
+    /// consensus rule set is `TimelockExtension`. Required at the post-fork
+    /// activation boundary: the LEFT and RIGHT input proofs were generated
+    /// against `SingleProofV2.program()`, so the merge must produce its
+    /// outer proof against the same program or the inner StarkVerify in
+    /// the merge_branch TASM rejects with `BadMerkleAuthenticationPath`.
+    pub(crate) async fn merge_with_rule(
+        self,
+        triton_vm_job_queue: Arc<TritonVmJobQueue>,
+        proof_job_options: TritonVmProofJobOptions,
+        consensus_rule_set: crate::protocol::consensus::consensus_rule_set::ConsensusRuleSet,
+    ) -> Result<Transaction> {
+        use crate::protocol::consensus::consensus_rule_set::ConsensusRuleSet;
         let new_kernel = self.new_kernel.clone();
 
-        let new_single_proof_witness = SingleProofWitness::from_merge(self);
-        let new_single_proof_claim = new_single_proof_witness.claim();
         info!("Start: creating new single proof through merge");
-        let new_single_proof = SingleProof
-            .prove(
-                new_single_proof_claim,
-                new_single_proof_witness.nondeterminism(),
-                triton_vm_job_queue,
-                proof_job_options,
-            )
-            .await?;
+        let new_single_proof = match consensus_rule_set {
+            ConsensusRuleSet::Reboot
+            | ConsensusRuleSet::HardforkAlpha
+            | ConsensusRuleSet::Xnt => {
+                let new_single_proof_witness = SingleProofWitness::from_merge(self);
+                let new_single_proof_claim = new_single_proof_witness.claim();
+                SingleProof
+                    .prove(
+                        new_single_proof_claim,
+                        new_single_proof_witness.nondeterminism(),
+                        triton_vm_job_queue,
+                        proof_job_options,
+                    )
+                    .await?
+            }
+            ConsensusRuleSet::TimelockExtension => {
+                use crate::protocol::consensus::transaction::validity::single_proof_v2::SingleProofV2;
+                use crate::protocol::consensus::transaction::validity::single_proof_v2::SingleProofV2Witness;
+                let new_single_proof_witness = SingleProofV2Witness::from_merge(self);
+                let new_single_proof_claim = new_single_proof_witness.claim();
+                SingleProofV2
+                    .prove(
+                        new_single_proof_claim,
+                        new_single_proof_witness.nondeterminism(),
+                        triton_vm_job_queue,
+                        proof_job_options,
+                    )
+                    .await?
+            }
+        };
 
         info!("Done: creating new single proof through merge");
 

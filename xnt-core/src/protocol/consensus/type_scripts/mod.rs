@@ -3,6 +3,7 @@ pub mod known_type_scripts;
 pub mod native_currency;
 pub mod native_currency_amount;
 pub mod time_lock;
+pub mod time_lock_v2;
 
 use std::collections::HashMap;
 use std::hash::Hasher as StdHasher;

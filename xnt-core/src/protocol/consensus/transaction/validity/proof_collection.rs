@@ -210,6 +210,159 @@ impl ProofCollection {
         })
     }
 
+    /// V2 counterpart of [`produce`]. Identical to V1 except that the
+    /// CollectTypeScripts proof is generated against `CollectTypeScriptsV2`
+    /// (which remaps any legacy `TimeLock` hash to `TimeLockV2`) and the
+    /// per-type-script witnesses are rebuilt via the V2 dispatch so coins
+    /// still tagged with the legacy hash are proved by `TimeLockV2`. The
+    /// resulting `type_script_hashes` field reflects the post-remap set,
+    /// matching what `CollectTypeScriptsV2` emits.
+    pub async fn produce_v2(
+        primitive_witness: &PrimitiveWitness,
+        triton_vm_job_queue: Arc<TritonVmJobQueue>,
+        proof_job_options: TritonVmProofJobOptions,
+    ) -> Result<Self, CreateProofError> {
+        use crate::protocol::consensus::transaction::validity::collect_type_scripts_v2::CollectTypeScriptsV2;
+        use crate::protocol::consensus::transaction::validity::collect_type_scripts_v2::CollectTypeScriptsV2Witness;
+        use crate::protocol::consensus::type_scripts::known_type_scripts::match_type_script_and_generate_witness_v2;
+        use crate::protocol::consensus::type_scripts::time_lock::TimeLock;
+        use crate::protocol::consensus::type_scripts::time_lock_v2::TimeLockV2;
+
+        let (removal_records_integrity_witness, collect_lock_scripts_witness, kernel_to_outputs_witness, _) =
+            Self::extract_specific_witnesses(primitive_witness);
+        let collect_type_scripts_witness = CollectTypeScriptsV2Witness::from(primitive_witness);
+
+        let txk_mast_hash = primitive_witness.kernel.mast_hash();
+        let txk_mast_hash_as_input = PublicInput::new(txk_mast_hash.reversed().values().to_vec());
+        let salted_inputs_hash = Tip5::hash(&primitive_witness.input_utxos);
+        let salted_outputs_hash = Tip5::hash(&primitive_witness.output_utxos);
+
+        debug!("proving RemovalRecordsIntegrity (V2)");
+        let removal_records_integrity = RemovalRecordsIntegrity
+            .prove(
+                removal_records_integrity_witness.claim(),
+                removal_records_integrity_witness.nondeterminism(),
+                triton_vm_job_queue.clone(),
+                proof_job_options.clone(),
+            )
+            .await?;
+
+        debug!("proving CollectLockScripts (V2)");
+        let collect_lock_scripts = CollectLockScripts
+            .prove(
+                collect_lock_scripts_witness.claim(),
+                collect_lock_scripts_witness.nondeterminism(),
+                triton_vm_job_queue.clone(),
+                proof_job_options.clone(),
+            )
+            .await?;
+
+        debug!("proving KernelToOutputs (V2)");
+        let kernel_to_outputs = KernelToOutputs
+            .prove(
+                kernel_to_outputs_witness.claim(),
+                kernel_to_outputs_witness.nondeterminism(),
+                triton_vm_job_queue.clone(),
+                proof_job_options.clone(),
+            )
+            .await?;
+
+        debug!("proving CollectTypeScriptsV2");
+        let collect_type_scripts = CollectTypeScriptsV2
+            .prove(
+                collect_type_scripts_witness.claim(),
+                collect_type_scripts_witness.nondeterminism(),
+                triton_vm_job_queue.clone(),
+                proof_job_options.clone(),
+            )
+            .await?;
+
+        debug!("proving lock scripts (V2)");
+        let mut lock_scripts_halt = vec![];
+        for lock_script_and_witness in &primitive_witness.lock_scripts_and_witnesses {
+            lock_scripts_halt.push(
+                lock_script_and_witness
+                    .prove(
+                        txk_mast_hash_as_input.clone(),
+                        triton_vm_job_queue.clone(),
+                        proof_job_options.clone(),
+                    )
+                    .await?,
+            );
+        }
+
+        // Rebuild type-script witnesses using the V2 dispatch so OLD_HASH
+        // coins are proved by TimeLockV2.
+        debug!("proving type scripts (V2)");
+        let mut type_scripts_halt = vec![];
+        let old_timelock_hash = TimeLock.hash();
+        let new_timelock_hash = TimeLockV2.hash();
+        // Collect the post-remap, deduplicated set of type-script hashes
+        // (same set CollectTypeScriptsV2 emits).
+        let mut remapped_hashes: Vec<Digest> = vec![];
+        for tsaw in &primitive_witness.type_scripts_and_witnesses {
+            let h = tsaw.program.hash();
+            let remapped = if h == old_timelock_hash {
+                new_timelock_hash
+            } else {
+                h
+            };
+            if !remapped_hashes.contains(&remapped) {
+                remapped_hashes.push(remapped);
+            }
+        }
+        // Build a V2 witness for every distinct remapped hash and prove it.
+        for type_script_hash in &remapped_hashes {
+            let v2_tsaw = match_type_script_and_generate_witness_v2(
+                *type_script_hash,
+                primitive_witness.kernel.clone(),
+                primitive_witness.input_utxos.clone(),
+                primitive_witness.output_utxos.clone(),
+            )
+            .unwrap_or_else(|| {
+                panic!("unknown type script hash post-remap: {type_script_hash}")
+            });
+            type_scripts_halt.push(
+                v2_tsaw
+                    .prove(
+                        txk_mast_hash,
+                        salted_inputs_hash,
+                        salted_outputs_hash,
+                        triton_vm_job_queue.clone(),
+                        proof_job_options.clone(),
+                    )
+                    .await?,
+            );
+        }
+        info!("done proving proof collection (V2)");
+
+        let lock_script_hashes = primitive_witness
+            .lock_scripts_and_witnesses
+            .iter()
+            .map(|lsaw| lsaw.program.hash())
+            .collect_vec();
+        let type_script_hashes = remapped_hashes;
+
+        let merge_bit_mast_path = primitive_witness
+            .kernel
+            .mast_path(TransactionKernelField::MergeBit);
+
+        Ok(ProofCollection {
+            removal_records_integrity,
+            collect_lock_scripts,
+            lock_scripts_halt,
+            kernel_to_outputs,
+            collect_type_scripts,
+            type_scripts_halt,
+            lock_script_hashes,
+            type_script_hashes,
+            kernel_mast_hash: txk_mast_hash,
+            salted_inputs_hash,
+            salted_outputs_hash,
+            merge_bit_mast_path,
+        })
+    }
+
     // produce ProofCollection with mock proofs
     pub(crate) fn produce_mock(primitive_witness: &PrimitiveWitness, valid_mock: bool) -> Self {
         let txk_mast_hash = primitive_witness.kernel.mast_hash();
@@ -388,6 +541,58 @@ impl ProofCollection {
         rri && k2o && cls && cts && lsh && tsh
     }
 
+    /// V2 counterpart of [`verify`]. Identical except that the inline
+    /// collect_type_scripts claim is built against `CollectTypeScriptsV2`,
+    /// matching what a V2 ProofCollection (created via [`produce_v2`])
+    /// carries. Called from the transaction-validation path post-fork.
+    pub(crate) async fn verify_v2(&self, txk_mast_hash: Digest, network: Network) -> bool {
+        use crate::protocol::consensus::transaction::validity::collect_type_scripts_v2::CollectTypeScriptsV2;
+        debug!("verifying (V2), txk hash: {}", txk_mast_hash);
+        if self.kernel_mast_hash != txk_mast_hash {
+            return false;
+        }
+
+        let removal_records_integrity_claim = self.removal_records_integrity_claim();
+        let kernel_to_outputs_claim = self.kernel_to_outputs_claim();
+        let collect_lock_scripts_claim = self.collect_lock_scripts_claim();
+        let collect_type_scripts_claim = self.collect_type_scripts_claim_v2();
+        let _ = &CollectTypeScriptsV2; // ensure import is used
+
+        let lock_script_claims = self.lock_script_claims();
+        let type_script_claims = self.type_script_claims();
+
+        let rri = verify(
+            removal_records_integrity_claim,
+            self.removal_records_integrity.clone(),
+            network,
+        )
+        .await;
+        let k2o = verify(kernel_to_outputs_claim, self.kernel_to_outputs.clone(), network).await;
+        let cls = verify(
+            collect_lock_scripts_claim,
+            self.collect_lock_scripts.clone(),
+            network,
+        )
+        .await;
+        let cts = verify(
+            collect_type_scripts_claim,
+            self.collect_type_scripts.clone(),
+            network,
+        )
+        .await;
+
+        let mut lsh = true;
+        for (cl, pr) in lock_script_claims.iter().zip(self.lock_scripts_halt.iter()) {
+            lsh &= verify(cl.clone(), pr.clone(), network).await;
+        }
+        let mut tsh = true;
+        for (cl, pr) in type_script_claims.iter().zip(self.type_scripts_halt.iter()) {
+            tsh &= verify(cl.clone(), pr.clone(), network).await;
+        }
+
+        rri && k2o && cls && cts && lsh && tsh
+    }
+
     pub fn removal_records_integrity_claim(&self) -> Claim {
         Claim::about_program(&RemovalRecordsIntegrity.program())
             .with_input(self.kernel_mast_hash.reversed().values())
@@ -430,6 +635,33 @@ impl ProofCollection {
             i += 1;
         }
         Claim::about_program(&CollectTypeScripts.program())
+            .with_input(
+                [self.salted_inputs_hash, self.salted_outputs_hash]
+                    .map(|digest| digest.reversed().values())
+                    .concat(),
+            )
+            .with_output(type_script_hashes_as_output)
+    }
+
+    /// V2 counterpart of [`collect_type_scripts_claim`]. Builds the claim
+    /// against `CollectTypeScriptsV2` so that a V2 SingleProof verifier
+    /// matches the post-fork program hash. `type_script_hashes` on `self`
+    /// is already the post-remap set when this ProofCollection was created
+    /// via [`produce_v2`].
+    pub fn collect_type_scripts_claim_v2(&self) -> Claim {
+        use crate::protocol::consensus::transaction::validity::collect_type_scripts_v2::CollectTypeScriptsV2;
+        let mut type_script_hashes_as_output = vec![];
+        let mut i = 0;
+        while i < self.type_script_hashes.len() {
+            let type_script_hash: Digest = self.type_script_hashes[i];
+            let mut j: usize = 0;
+            while j < Digest::LEN {
+                type_script_hashes_as_output.push(type_script_hash.values()[j]);
+                j += 1;
+            }
+            i += 1;
+        }
+        Claim::about_program(&CollectTypeScriptsV2.program())
             .with_input(
                 [self.salted_inputs_hash, self.salted_outputs_hash]
                     .map(|digest| digest.reversed().values())

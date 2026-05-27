@@ -26,7 +26,7 @@ use crate::protocol::consensus::transaction::validity::tasm::single_proof::updat
 use crate::protocol::proof_abstractions::tasm::program::TritonVmProofJobOptions;
 use crate::protocol::consensus::transaction::primitive_witness::PrimitiveWitness;
 use crate::protocol::consensus::transaction::validity::tasm::claims::generate_collect_lock_scripts_claim::GenerateCollectLockScriptsClaim;
-use crate::protocol::consensus::transaction::validity::tasm::claims::generate_collect_type_scripts_claim::GenerateCollectTypeScriptsClaim;
+use crate::protocol::consensus::transaction::validity::tasm::claims::generate_collect_type_scripts_claim_v2::GenerateCollectTypeScriptsClaimV2;
 use crate::protocol::consensus::transaction::validity::tasm::claims::generate_k2o_claim::GenerateK2oClaim;
 use crate::protocol::consensus::transaction::validity::tasm::claims::generate_lock_script_claim_template::GenerateLockScriptClaimTemplate;
 use crate::protocol::consensus::transaction::validity::tasm::claims::generate_type_script_claim_template::GenerateTypeScriptClaimTemplate;
@@ -51,7 +51,7 @@ const NO_BRANCH_TAKEN_ERROR: i128 = 1_000_051;
 const MANIPULATED_PROOF_COLLECTION_WITNESS_ERROR: i128 = 1_000_052;
 
 #[derive(Debug, Clone, BFieldCodec)]
-pub enum SingleProofWitness {
+pub enum SingleProofV2Witness {
     Collection(Box<ProofCollection>),
     Update(UpdateWitness),
     Merger(MergeWitness),
@@ -59,7 +59,7 @@ pub enum SingleProofWitness {
     // IntegralMempool(IntegralMempoolMembershipWitness)
 }
 
-impl SingleProofWitness {
+impl SingleProofV2Witness {
     pub fn from_collection(proof_collection: ProofCollection) -> Self {
         Self::Collection(Box::new(proof_collection))
     }
@@ -75,9 +75,9 @@ impl SingleProofWitness {
 
 // This implementation of `TasmObject` is required for `decode_iter` and the
 // method `decode_from_memory` that relies on it.
-impl TasmObject for SingleProofWitness {
+impl TasmObject for SingleProofV2Witness {
     fn label_friendly_name() -> String {
-        "SingleProofWitness".to_string()
+        "SingleProofV2Witness".to_string()
     }
 
     fn compute_size_and_assert_valid_size_indicator(
@@ -115,7 +115,7 @@ impl TasmObject for SingleProofWitness {
     }
 }
 
-impl SecretWitness for SingleProofWitness {
+impl SecretWitness for SingleProofV2Witness {
     fn standard_input(&self) -> PublicInput {
         let kernel_mast_hash = match self {
             Self::Collection(pc) => pc.kernel_mast_hash,
@@ -130,7 +130,7 @@ impl SecretWitness for SingleProofWitness {
     }
 
     fn program(&self) -> Program {
-        SingleProof.program()
+        SingleProofV2.program()
     }
 
     fn nondeterminism(&self) -> NonDeterminism {
@@ -144,10 +144,10 @@ impl SecretWitness for SingleProofWitness {
 
         let mut nondeterminism = NonDeterminism::default().with_ram(memory);
         let stark_verify_snippet = StarkVerify::new_with_dynamic_layout(Stark::default());
-        let single_proof_program_hash = SingleProof.hash();
+        let single_proof_program_hash = SingleProofV2.hash();
 
         match self {
-            SingleProofWitness::Collection(proof_collection) => {
+            SingleProofV2Witness::Collection(proof_collection) => {
                 nondeterminism
                     .digests
                     .extend_from_slice(&proof_collection.merge_bit_mast_path);
@@ -180,7 +180,7 @@ impl SecretWitness for SingleProofWitness {
                 );
 
                 // collect type scripts
-                let cts_claim = proof_collection.collect_type_scripts_claim();
+                let cts_claim = proof_collection.collect_type_scripts_claim_v2();
                 let cts_proof = &proof_collection.collect_type_scripts;
                 stark_verify_snippet.update_nondeterminism(
                     &mut nondeterminism,
@@ -206,10 +206,10 @@ impl SecretWitness for SingleProofWitness {
                     stark_verify_snippet.update_nondeterminism(&mut nondeterminism, proof, &claim);
                 }
             }
-            SingleProofWitness::Update(witness) => {
+            SingleProofV2Witness::Update(witness) => {
                 witness.populate_nd_streams(&mut nondeterminism, single_proof_program_hash);
             }
-            SingleProofWitness::Merger(witness_of_merge) => {
+            SingleProofV2Witness::Merger(witness_of_merge) => {
                 witness_of_merge
                     .populate_nd_streams(&mut nondeterminism, single_proof_program_hash);
             }
@@ -220,41 +220,41 @@ impl SecretWitness for SingleProofWitness {
 }
 
 #[derive(Debug, Copy, Clone)]
-pub struct SingleProof;
+pub struct SingleProofV2;
 
-impl SingleProof {
-    /// Not to be confused with SingleProofWitness::claim
-    fn claim(tx_kernel_mast_hash: Digest) -> Claim {
-        Claim::about_program(&SingleProof.program())
+impl SingleProofV2 {
+    /// Not to be confused with SingleProofV2Witness::claim
+    pub(crate) fn claim(tx_kernel_mast_hash: Digest) -> Claim {
+        Claim::about_program(&SingleProofV2.program())
             .with_input(tx_kernel_mast_hash.reversed().values())
     }
 
-    /// Generate a [SingleProof] for the transaction, given its primitive
+    /// Generate a [SingleProofV2] for the transaction, given its primitive
     /// witness.
     ///
     /// This involves generating a [ProofCollection] as an intermediate step.
     ///
     /// Use [produce_single_proof] to automatically select the right single
     /// proof version.
-    async fn produce(
+    pub(crate) async fn produce(
         primitive_witness: &PrimitiveWitness,
         triton_vm_job_queue: Arc<TritonVmJobQueue>,
         proof_job_options: TritonVmProofJobOptions,
     ) -> Result<Proof, CreateProofError> {
-        let proof_collection = ProofCollection::produce(
+        let proof_collection = ProofCollection::produce_v2(
             primitive_witness,
             triton_vm_job_queue.clone(),
             proof_job_options.clone(),
         )
         .await?;
-        let single_proof_witness = SingleProofWitness::from_collection(proof_collection);
+        let single_proof_witness = SingleProofV2Witness::from_collection(proof_collection);
         let claim = single_proof_witness.claim();
 
         let nondeterminism = single_proof_witness.nondeterminism();
         info!("Start: generate single proof from proof collection");
 
         let proof = ProofBuilder::new()
-            .program(SingleProof.program())
+            .program(SingleProofV2.program())
             .claim(claim)
             .nondeterminism(|| nondeterminism)
             .job_queue(triton_vm_job_queue)
@@ -267,12 +267,12 @@ impl SingleProof {
     }
 }
 
-/// Generate a [SingleProof] for the transaction, given its primitive
+/// Generate a [SingleProofV2] for the transaction, given its primitive
 /// witness.
 ///
 /// This involves generating a [ProofCollection] as an intermediate step.
 //
-// This function calls SingleProof::produce but with the correct merge
+// This function calls SingleProofV2::produce but with the correct merge
 // version.
 pub(crate) async fn produce_single_proof(
     primitive_witness: &PrimitiveWitness,
@@ -283,22 +283,21 @@ pub(crate) async fn produce_single_proof(
     match consensus_rule_set {
         ConsensusRuleSet::Reboot
         | ConsensusRuleSet::HardforkAlpha
-        | ConsensusRuleSet::Xnt => {
-            SingleProof::produce(primitive_witness, triton_vm_job_queue, proof_job_options).await
-        }
-        ConsensusRuleSet::TimelockExtension => {
-            crate::protocol::consensus::transaction::validity::single_proof_v2::SingleProofV2
-                ::produce(primitive_witness, triton_vm_job_queue, proof_job_options)
-                .await
+        | ConsensusRuleSet::Xnt
+        | ConsensusRuleSet::TimelockExtension => {
+            // TODO(phase 6): TimelockExtension should produce a SingleProofV2
+            // backed by CollectTypeScriptsV2's hash. For now it shares V1 so
+            // the variant is wired and the rest of the cascade can be built.
+            SingleProofV2::produce(primitive_witness, triton_vm_job_queue, proof_job_options).await
         }
     }
 }
 
-/// Not to be confused with SingleProofWitness::claim
+/// Not to be confused with SingleProofV2Witness::claim
 ///
 /// Consensus rule set refers to the rule set for which the claim must be valid.
 //
-// This function calls SingleProof::claim but with the correct merge version.
+// This function calls SingleProofV2::claim but with the correct merge version.
 pub(crate) fn single_proof_claim(
     tx_kernel_mast_hash: Digest,
     consensus_rule_set: ConsensusRuleSet,
@@ -306,10 +305,12 @@ pub(crate) fn single_proof_claim(
     match consensus_rule_set {
         ConsensusRuleSet::Reboot
         | ConsensusRuleSet::HardforkAlpha
-        | ConsensusRuleSet::Xnt => SingleProof::claim(tx_kernel_mast_hash),
-        ConsensusRuleSet::TimelockExtension => {
-            crate::protocol::consensus::transaction::validity::single_proof_v2::SingleProofV2
-                ::claim(tx_kernel_mast_hash)
+        | ConsensusRuleSet::Xnt
+        | ConsensusRuleSet::TimelockExtension => {
+            // TODO(phase 6): TimelockExtension should return SingleProofV2's
+            // claim. For now it shares V1; this still wires every downstream
+            // consumer through ConsensusRuleSet so the V2 swap is localised.
+            SingleProofV2::claim(tx_kernel_mast_hash)
         }
     }
 }
@@ -323,7 +324,7 @@ pub(crate) fn produce_single_proof_mock(valid_mock: bool) -> Proof {
     }
 }
 
-impl ConsensusProgram for SingleProof {
+impl ConsensusProgram for SingleProofV2 {
     fn library_and_code(&self) -> (Library, Vec<LabelledInstruction>) {
         let mut library = Library::new();
 
@@ -334,7 +335,7 @@ impl ConsensusProgram for SingleProof {
         let assemble_rri_claim = library.import(Box::new(GenerateRriClaim));
         let assemble_k2o_claim = library.import(Box::new(GenerateK2oClaim));
         let assemble_cls_claim = library.import(Box::new(GenerateCollectLockScriptsClaim));
-        let assemble_cts_claim = library.import(Box::new(GenerateCollectTypeScriptsClaim));
+        let assemble_cts_claim = library.import(Box::new(GenerateCollectTypeScriptsClaimV2));
         let assemble_lock_script_claim_template =
             library.import(Box::new(GenerateLockScriptClaimTemplate));
         let assemble_type_script_claim_template =
@@ -750,7 +751,7 @@ impl ConsensusProgram for SingleProof {
 
     fn program(&self) -> Program {
         // Overwrite trait-implementation since this leads to much faster code.
-        // Throughout the lifetime of a client, the `SingleProof` program for a
+        // Throughout the lifetime of a client, the `SingleProofV2` program for a
         // given version never changes, so this is OK.
         static PROGRAM: OnceLock<Program> = OnceLock::new();
 
@@ -779,8 +780,8 @@ pub(crate) mod tests {
     use crate::application::config::network::Network;
     use crate::application::triton_vm_job_queue::TritonVmJobPriority;
     use crate::protocol::consensus::transaction::primitive_witness::PrimitiveWitness;
-    use crate::protocol::consensus::transaction::validity::single_proof::SingleProof;
-    use crate::protocol::consensus::transaction::validity::single_proof::SingleProofWitness;
+    use crate::protocol::consensus::transaction::validity::single_proof_v2::SingleProofV2;
+    use crate::protocol::consensus::transaction::validity::single_proof_v2::SingleProofV2Witness;
     use crate::protocol::consensus::transaction::validity::tasm::single_proof::merge_branch::tests::deterministic_merge_witness;
     use crate::protocol::consensus::transaction::validity::tasm::single_proof::update_branch::tests::deterministic_update_witness_only_additions_to_mutator_set;
     use crate::protocol::consensus::type_scripts::time_lock::neptune_arbitrary::arbitrary_primitive_witness_with_expired_timelocks;
@@ -791,16 +792,16 @@ pub(crate) mod tests {
     use crate::protocol::proof_abstractions::timestamp::Timestamp;
     use crate::tests::shared_tokio_runtime;
 
-    impl ConsensusProgramSpecification for SingleProof {
+    impl ConsensusProgramSpecification for SingleProofV2 {
         fn source(&self) {
             let stark: Stark = Stark::default();
             let own_program_digest: Digest = tasm::own_program_digest();
             let txk_digest: Digest = tasm::tasmlib_io_read_stdin___digest();
 
-            match tasm::decode_from_memory::<SingleProofWitness>(
+            match tasm::decode_from_memory::<SingleProofV2Witness>(
                 FIRST_NON_DETERMINISTICALLY_INITIALIZED_MEMORY_ADDRESS,
             ) {
-                SingleProofWitness::Collection(pc) => {
+                SingleProofV2Witness::Collection(pc) => {
                     assert_eq!(txk_digest, pc.kernel_mast_hash);
 
                     let claimed_merge_bit = false;
@@ -829,7 +830,7 @@ pub(crate) mod tests {
                         &pc.collect_lock_scripts,
                     );
 
-                    let collect_type_scripts_claim: Claim = pc.collect_type_scripts_claim();
+                    let collect_type_scripts_claim: Claim = pc.collect_type_scripts_claim_v2();
                     tasm::verify_stark(
                         stark,
                         &collect_type_scripts_claim,
@@ -857,11 +858,11 @@ pub(crate) mod tests {
                         i += 1;
                     }
                 }
-                SingleProofWitness::Update(witness) => {
+                SingleProofV2Witness::Update(witness) => {
                     debug_assert_eq!(txk_digest, witness.new_kernel_mast_hash);
                     witness.branch_source(own_program_digest, txk_digest);
                 }
-                SingleProofWitness::Merger(witness) => {
+                SingleProofV2Witness::Merger(witness) => {
                     witness.branch_source(own_program_digest, txk_digest)
                 }
             }
@@ -881,7 +882,7 @@ pub(crate) mod tests {
 
             let nondeterminism = NonDeterminism::default().with_ram(init_ram);
 
-            let consensus_err = SingleProof.run_tasm(&pub_input, nondeterminism.clone());
+            let consensus_err = SingleProofV2.run_tasm(&pub_input, nondeterminism.clone());
 
             let_assert!(Err(ConsensusError::TritonVMPanic(_, instruction_err)) = consensus_err);
             let_assert!(InstructionError::AssertionFailed(assertion_err) = instruction_err);
@@ -890,11 +891,11 @@ pub(crate) mod tests {
         }
     }
 
-    fn positive_prop(witness: SingleProofWitness) {
+    fn positive_prop(witness: SingleProofV2Witness) {
         let claim = witness.claim();
         let public_input = PublicInput::new(claim.input);
-        let rust_result = SingleProof.run_rust(&public_input, witness.nondeterminism());
-        let tasm_result = SingleProof.run_tasm(&public_input, witness.nondeterminism());
+        let rust_result = SingleProofV2.run_rust(&public_input, witness.nondeterminism());
+        let tasm_result = SingleProofV2.run_tasm(&public_input, witness.nondeterminism());
         assert_eq!(rust_result.unwrap(), tasm_result.unwrap());
     }
 
@@ -913,14 +914,14 @@ pub(crate) mod tests {
                     .unwrap()
                     .current();
 
-            let good_proof_collection = ProofCollection::produce(
+            let good_proof_collection = ProofCollection::produce_v2(
                 &good_primitive_witness,
                 TritonVmJobQueue::get_instance(),
                 TritonVmJobPriority::default().into(),
             )
             .await
             .unwrap();
-            let good_witness = SingleProofWitness::from_collection(good_proof_collection.clone());
+            let good_witness = SingleProofV2Witness::from_collection(good_proof_collection.clone());
             positive_prop(good_witness);
 
             // Setting the `merge_bit` must make program crash, as this bit may
@@ -931,7 +932,7 @@ pub(crate) mod tests {
                     .unwrap()
                     .current();
 
-            let bad_proof_collection = ProofCollection::produce(
+            let bad_proof_collection = ProofCollection::produce_v2(
                 &bad_primitive_witness,
                 TritonVmJobQueue::get_instance(),
                 TritonVmJobPriority::default().into(),
@@ -939,12 +940,12 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-            let bad_witness = SingleProofWitness::from_collection(bad_proof_collection);
+            let bad_witness = SingleProofV2Witness::from_collection(bad_proof_collection);
 
             // This witness fails with a Merkle auth path error since it never
             // reads the actual bit but rather just verifies that it is set to
             // false in this execution path.
-            SingleProof
+            SingleProofV2
                 .test_assertion_failure(
                     bad_witness.standard_input(),
                     bad_witness.nondeterminism(),
@@ -964,26 +965,26 @@ pub(crate) mod tests {
                 .current();
             let txk_mast_hash = primitive_witness.kernel.mast_hash();
 
-            let proof_collection = ProofCollection::produce(
+            let proof_collection = ProofCollection::produce_v2(
                 &primitive_witness,
                 TritonVmJobQueue::get_instance(),
                 TritonVmJobPriority::default().into(),
             )
             .await
             .unwrap();
-            assert!(proof_collection.verify(txk_mast_hash, network).await);
+            assert!(proof_collection.verify_v2(txk_mast_hash, network).await);
 
-            let witness = SingleProofWitness::from_collection(proof_collection.clone());
+            let witness = SingleProofV2Witness::from_collection(proof_collection.clone());
             let claim = witness.claim();
             let public_input = PublicInput::new(claim.input);
-            let rust_result = SingleProof.run_rust(&public_input, witness.nondeterminism());
-            let tasm_result = SingleProof.run_tasm(&public_input, witness.nondeterminism());
+            let rust_result = SingleProofV2.run_rust(&public_input, witness.nondeterminism());
+            let tasm_result = SingleProofV2.run_tasm(&public_input, witness.nondeterminism());
             assert_eq!(rust_result.unwrap(), tasm_result.unwrap());
 
             // Verify equivalence of claim functions
             assert_eq!(
                 witness.claim(),
-                SingleProof::claim(txk_mast_hash),
+                SingleProofV2::claim(txk_mast_hash),
                 "Claim functions must agree"
             );
         }
@@ -991,33 +992,43 @@ pub(crate) mod tests {
         #[traced_test]
         #[apply(shared_tokio_runtime)]
         async fn can_verify_via_valid_proof_collection_if_timelocked_expired() {
+            // V2-aware: under TimelockExtension a coin tagged with the legacy
+            // TimeLock hash needs `release_date + 1 year < tx.timestamp` to be
+            // spendable. The inherited `arbitrary_primitive_witness_with_expired_timelocks`
+            // helper places release dates within the past 6 months of `now`,
+            // which is enough for V1 but not for V2. Bump the kernel timestamp
+            // 2 years ahead of `now` so the V2 +1y enforcement is satisfied.
+            use crate::protocol::consensus::transaction::transaction_kernel::TransactionKernelModifier;
             let network = Network::Main;
             let mut test_runner = TestRunner::deterministic();
             let deterministic_now = arb::<Timestamp>()
                 .new_tree(&mut test_runner)
                 .unwrap()
                 .current();
-            let primitive_witness =
+            let mut primitive_witness =
                 arbitrary_primitive_witness_with_expired_timelocks(2, 2, 2, deterministic_now)
                     .new_tree(&mut test_runner)
                     .unwrap()
                     .current();
+            primitive_witness.kernel = TransactionKernelModifier::default()
+                .timestamp(deterministic_now + Timestamp::years(2))
+                .modify(primitive_witness.kernel);
             let txk_mast_hash = primitive_witness.kernel.mast_hash();
 
-            let proof_collection = ProofCollection::produce(
+            let proof_collection = ProofCollection::produce_v2(
                 &primitive_witness,
                 TritonVmJobQueue::get_instance(),
                 TritonVmJobPriority::default().into(),
             )
             .await
             .unwrap();
-            assert!(proof_collection.verify(txk_mast_hash, network).await);
+            assert!(proof_collection.verify_v2(txk_mast_hash, network).await);
 
-            let witness = SingleProofWitness::from_collection(proof_collection.clone());
+            let witness = SingleProofV2Witness::from_collection(proof_collection.clone());
             let claim = witness.claim();
             let public_input = PublicInput::new(claim.input);
-            let rust_result = SingleProof.run_rust(&public_input, witness.nondeterminism());
-            let tasm_result = SingleProof.run_tasm(&public_input, witness.nondeterminism());
+            let rust_result = SingleProofV2.run_rust(&public_input, witness.nondeterminism());
+            let tasm_result = SingleProofV2.run_tasm(&public_input, witness.nondeterminism());
             assert_eq!(rust_result.unwrap(), tasm_result.unwrap());
         }
     }
@@ -1031,14 +1042,14 @@ pub(crate) mod tests {
         use super::*;
 
         fn positive_prop(witness: MergeWitness) {
-            let witness = SingleProofWitness::from_merge(witness);
+            let witness = SingleProofV2Witness::from_merge(witness);
             let claim = witness.claim();
             let input = PublicInput::new(claim.input.clone());
             let nondeterminism = witness.nondeterminism();
 
-            let rust_result = SingleProof.run_rust(&input, nondeterminism.clone());
+            let rust_result = SingleProofV2.run_rust(&input, nondeterminism.clone());
 
-            let tasm_result = SingleProof.run_tasm(&input, nondeterminism);
+            let tasm_result = SingleProofV2.run_tasm(&input, nondeterminism);
 
             assert_eq!(rust_result.unwrap(), tasm_result.unwrap());
         }
@@ -1050,7 +1061,7 @@ pub(crate) mod tests {
             let merge_witness = deterministic_merge_witness(
                 (2, 2, 2),
                 (2, 2, 2),
-                ConsensusRuleSet::default(),
+                ConsensusRuleSet::TimelockExtension,
                 network,
             )
             .await;
@@ -1066,7 +1077,7 @@ pub(crate) mod tests {
                 3,
                 3,
                 network,
-                ConsensusRuleSet::default(),
+                ConsensusRuleSet::TimelockExtension,
             )
             .await;
             positive_prop(merge_witness);
@@ -1087,31 +1098,31 @@ pub(crate) mod tests {
         use super::*;
 
         fn positive_prop(witness: UpdateWitness) {
-            let witness = SingleProofWitness::from_update(witness);
+            let witness = SingleProofV2Witness::from_update(witness);
             let claim = witness.claim();
             let input = PublicInput::new(claim.input.clone());
             let nondeterminism = witness.nondeterminism();
 
-            let rust_result = SingleProof.run_rust(&input, nondeterminism.clone());
+            let rust_result = SingleProofV2.run_rust(&input, nondeterminism.clone());
 
-            let tasm_result = SingleProof.run_tasm(&input, nondeterminism);
+            let tasm_result = SingleProofV2.run_tasm(&input, nondeterminism);
 
             assert_eq!(rust_result.unwrap(), tasm_result.unwrap());
         }
 
         fn negative_prop(witness: UpdateWitness, allowed_error_codes: &[i128]) {
-            let witness = SingleProofWitness::from_update(witness.clone());
+            let witness = SingleProofV2Witness::from_update(witness.clone());
             let claim = witness.claim();
             let input = PublicInput::new(claim.input.clone());
             let nondeterminism = witness.nondeterminism();
             let test_result =
-                SingleProof.test_assertion_failure(input, nondeterminism, allowed_error_codes);
+                SingleProofV2.test_assertion_failure(input, nondeterminism, allowed_error_codes);
             test_result.unwrap();
         }
 
         #[apply(shared_tokio_runtime)]
         async fn only_additions_small() {
-            let consensus_rule_set = ConsensusRuleSet::default();
+            let consensus_rule_set = ConsensusRuleSet::TimelockExtension;
             positive_prop(
                 deterministic_update_witness_only_additions_to_mutator_set(
                     2,
@@ -1125,7 +1136,7 @@ pub(crate) mod tests {
 
         #[apply(shared_tokio_runtime)]
         async fn only_additions_medium() {
-            let consensus_rule_set = ConsensusRuleSet::default();
+            let consensus_rule_set = ConsensusRuleSet::TimelockExtension;
             positive_prop(
                 deterministic_update_witness_only_additions_to_mutator_set(
                     4,
@@ -1139,7 +1150,7 @@ pub(crate) mod tests {
 
         #[apply(shared_tokio_runtime)]
         async fn addition_and_removals_tiny() {
-            let consensus_rule_set = ConsensusRuleSet::default();
+            let consensus_rule_set = ConsensusRuleSet::TimelockExtension;
             positive_prop(
                 deterministic_update_witness_additions_and_removals(1, 1, 1, consensus_rule_set)
                     .await,
@@ -1148,7 +1159,7 @@ pub(crate) mod tests {
 
         #[apply(shared_tokio_runtime)]
         async fn addition_and_removals_small() {
-            let consensus_rule_set = ConsensusRuleSet::default();
+            let consensus_rule_set = ConsensusRuleSet::TimelockExtension;
             positive_prop(
                 deterministic_update_witness_additions_and_removals(2, 2, 2, consensus_rule_set)
                     .await,
@@ -1157,7 +1168,7 @@ pub(crate) mod tests {
 
         #[apply(shared_tokio_runtime)]
         async fn addition_and_removals_midi() {
-            let consensus_rule_set = ConsensusRuleSet::default();
+            let consensus_rule_set = ConsensusRuleSet::TimelockExtension;
             positive_prop(
                 deterministic_update_witness_additions_and_removals(3, 3, 3, consensus_rule_set)
                     .await,
@@ -1166,7 +1177,7 @@ pub(crate) mod tests {
 
         #[apply(shared_tokio_runtime)]
         async fn addition_and_removals_medium() {
-            let consensus_rule_set = ConsensusRuleSet::default();
+            let consensus_rule_set = ConsensusRuleSet::TimelockExtension;
             positive_prop(
                 deterministic_update_witness_additions_and_removals(4, 4, 4, consensus_rule_set)
                     .await,
@@ -1252,7 +1263,7 @@ pub(crate) mod tests {
             // It takes a long time to generate the witness, so we reuse it across
             // multiple tests
 
-            let consensus_rule_set = ConsensusRuleSet::default();
+            let consensus_rule_set = ConsensusRuleSet::TimelockExtension;
             let good_witness = deterministic_update_witness_only_additions_to_mutator_set(
                 2,
                 2,
@@ -1276,7 +1287,7 @@ pub(crate) mod tests {
 
         #[apply(shared_tokio_runtime)]
         async fn disallow_update_of_tx_with_zero_inputs() {
-            let consensus_rule_set = ConsensusRuleSet::default();
+            let consensus_rule_set = ConsensusRuleSet::TimelockExtension;
             let only_new_additions_0_outputs =
                 deterministic_update_witness_only_additions_to_mutator_set(
                     0,
@@ -1302,11 +1313,11 @@ pub(crate) mod tests {
                 only_new_additions_2_outputs.clone(),
                 new_additions_and_removals_2_outputs.clone(),
             ] {
-                let bad_witness = SingleProofWitness::from_update(bad_witness);
+                let bad_witness = SingleProofV2Witness::from_update(bad_witness);
                 let claim = bad_witness.claim();
                 let input = PublicInput::new(claim.input.clone());
                 let nondeterminism = bad_witness.nondeterminism();
-                let test_result = SingleProof.test_assertion_failure(
+                let test_result = SingleProofV2.test_assertion_failure(
                     input,
                     nondeterminism,
                     &[UpdateBranch::INPUT_SET_IS_EMPTY_ERROR],
@@ -1317,7 +1328,13 @@ pub(crate) mod tests {
     }
 
     test_program_snapshot!(
-        SingleProof,
-        "9ed47e4aff83681ce46618c59971cc5eca2ef5a063b3f35828946f4810295871338072751af633e0"
+        SingleProofV2,
+        // SP_V2_HASH frozen after phase 6 of the +1 year timelock hard fork.
+        // The only TASM-level difference from V1 SingleProof is the import of
+        // GenerateCollectTypeScriptsClaimV2 (which hardcodes CTS_V2_HASH),
+        // so SingleProofV2 verifies a CollectTypeScriptsV2 proof instead of
+        // a V1 proof. Used by BlockAppendix consensus_claims under
+        // ConsensusRuleSet::TimelockExtension.
+        "e2855ffa6f556f0e88af876f5aeed12895e011df5f309affdb984fcfe8325511d1caba0b019682fe"
     );
 }
