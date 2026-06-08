@@ -1,0 +1,24 @@
+[
+  {
+    "name": "tasmlib_hashing_algebraic_hasher_hash_varlen",
+    "benchmark_result": {
+      "clock_cycle_count": 144,
+      "hash_table_height": 97,
+      "u32_table_height": 11,
+      "op_stack_table_height": 117,
+      "ram_table_height": 25
+    },
+    "case": "CommonCase"
+  },
+  {
+    "name": "tasmlib_hashing_algebraic_hasher_hash_varlen",
+    "benchmark_result": {
+      "clock_cycle_count": 732,
+      "hash_table_height": 685,
+      "u32_table_height": 16,
+      "op_stack_table_height": 509,
+      "ram_table_height": 1000
+    },
+    "case": "WorstCase"
+  }
+]

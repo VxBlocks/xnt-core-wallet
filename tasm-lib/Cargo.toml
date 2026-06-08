@@ -1,0 +1,24 @@
+[workspace]
+members = ["tasm-lib", "tasm-object-derive"]
+resolver = "2"
+
+[workspace.package]
+version = "3.0.0"
+edition = "2024"
+rust-version = "1.89"
+
+authors = ["Triton Software AG"]
+license = "Apache-2.0"
+homepage = "https://triton-vm.org/"
+documentation = "https://docs.rs/tasm-lib/"
+repository = "https://github.com/TritonVM/tasm-lib"
+readme = "README.md"
+
+[profile.release]
+lto = "thin"
+
+[workspace.dependencies.tasm-object-derive]
+version = "3.0.0"
+path = "tasm-object-derive"
+
+[workspace.lints.rust]
