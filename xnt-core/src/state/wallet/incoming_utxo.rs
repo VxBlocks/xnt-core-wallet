@@ -25,19 +25,20 @@ use crate::util_types::mutator_set::addition_record::AdditionRecord;
 /// See [UtxoNotificationPayload], [ExpectedUtxo]
 #[derive(Clone, Debug)]
 #[cfg_attr(any(test, feature = "arbitrary-impls"), derive(Arbitrary))]
-pub(crate) struct IncomingUtxo {
-    pub(crate) utxo: Utxo,
-    pub(crate) sender_randomness: Digest,
-    pub(crate) receiver_preimage: Digest,
+pub struct IncomingUtxo {
+    pub utxo: Utxo,
+    pub sender_randomness: Digest,
+    pub receiver_preimage: Digest,
 
     /// Whether the UTXO is a guesser fee or not. Only to be used for log
     /// messages and wallet info. Does not affect how the ability to claim the
     /// UTXO.
-    pub(crate) is_guesser_fee: bool,
+    pub is_guesser_fee: bool,
 
     /// Payment ID from subaddress announcement. Zero for base address announcements.
     pub(crate) payment_id: BFieldElement,
 }
+
 
 impl PartialEq for IncomingUtxo {
     fn eq(&self, other: &Self) -> bool {
@@ -77,6 +78,22 @@ impl From<&ExpectedUtxo> for IncomingUtxo {
 }
 
 impl IncomingUtxo {
+    pub fn new(
+        utxo: Utxo,
+        sender_randomness: Digest,
+        receiver_preimage: Digest,
+        is_guesser_fee: bool,
+        payment_id: BFieldElement,
+    ) -> Self {
+        Self {
+            utxo,
+            sender_randomness,
+            receiver_preimage,
+            is_guesser_fee,
+            payment_id,
+        }
+    }
+    
     pub(crate) fn utxo_triple(&self) -> UtxoTriple {
         UtxoTriple {
             utxo: self.utxo.clone(),
@@ -84,7 +101,7 @@ impl IncomingUtxo {
             receiver_digest: self.receiver_preimage.hash(),
         }
     }
-    pub(crate) fn addition_record(&self) -> AdditionRecord {
+    pub fn addition_record(&self) -> AdditionRecord {
         self.utxo_triple().addition_record()
     }
 
