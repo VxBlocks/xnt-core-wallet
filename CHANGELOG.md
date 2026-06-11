@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-06-11
+
+### Breaking Changes
+
+- **Hardfork at block height 56700 (`UpgradeVMv4`)**: upgrade to Triton VM v4.0.0 (proof format version 2). Every consensus program is re-hashed; blocks before the fork are checkpointed (trusted, not re-verified) because their proof format is incompatible with the v4 verifier.
+- **Hardfork at block height 55800 (`UpgradeVM`)**: Triton VM v3 with a legacy native-currency hash remap.
+- Updated package version from 0.2.0 to 0.2.3 (workspace-wide).
+
+### Added
+
+#### Consensus & Blockchain
+- **`UpgradeVM` and `UpgradeVMv4` consensus rule sets**: activation heights `BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET = 55800` and `BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET = 56700`, with per-era proof/claim versions and pinned program digests.
+- **Backward-compatible coin remap**: legacy and v3-era `NativeCurrency`, `TimeLock`, and `TimeLockV2` program hashes fold onto the current programs, so pre-fork coins remain recognized and spendable across the fork. Coverage spans balance/availability, time-lock release, the wallet/SDK (available, spendable, spent), and real STARK proof generation + verification.
+- **Pre-v4 proof checkpointing**: historical blocks are trusted without re-verification.
+- **Era-correct guesser-fee derivation**: the re-derived guesser-fee UTXO uses the `NativeCurrency` hash matching the block's era (legacy / v3 / current).
+
+### Changed
+
+- Bumped the `tasm-lib` dependency to the released `v4.0.0` tag (Triton VM 4.0.0) and removed the vendored submodule.
+
+### Fixed
+
+- **Block production under v4**: the composer now honors `MINING_REWARD_TIME_LOCK_PERIOD == 0` and produces a fully-liquid coinbase, so mining works under `UpgradeVMv4`. A v4 program-hash collision otherwise caused a time-locked coinbase to trip the disabled coinbase time-lock rule (`COINBASE_TIMELOCK_INSUFFICIENT`, error id 1000033).
+
 ## [0.2.0] - 2026-01-21
 
 ### Breaking Changes

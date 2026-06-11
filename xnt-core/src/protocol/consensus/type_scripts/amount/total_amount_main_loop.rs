@@ -19,14 +19,15 @@ pub enum DigestSource {
     Hardcode(Digest),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TotalAmountMainLoop {
     pub digest_source: DigestSource,
     pub release_date: StaticAllocation,
-    /// Optional additional (legacy) type-script hash counted as native
-    /// currency alongside `digest_source`. See
-    /// [`AddAllAmountsAndCheckTimeLock::legacy_digest`]. `None` is byte-neutral.
-    pub legacy_digest: Option<Digest>,
+    /// Additional (historical) type-script hashes counted as native currency
+    /// alongside `digest_source`. See
+    /// [`AddAllAmountsAndCheckTimeLock::legacy_digests`]. An empty list is
+    /// byte-neutral.
+    pub legacy_digests: Vec<Digest>,
 }
 
 impl BasicSnippet for TotalAmountMainLoop {
@@ -68,9 +69,16 @@ impl BasicSnippet for TotalAmountMainLoop {
         // [`AddAllAmountsAndCheckTimeLock::entrypoint`]; `None` keeps the original
         // base name, so non-remap users emit byte-identical code.
         let base = "neptune_type_script_total_amount_main_loop";
-        match self.legacy_digest {
-            Some(digest) => format!("{base}_legacy_{}", digest.to_hex()),
-            None => base.to_string(),
+        if self.legacy_digests.is_empty() {
+            base.to_string()
+        } else {
+            let suffix = self
+                .legacy_digests
+                .iter()
+                .map(|d| d.to_hex())
+                .collect::<Vec<_>>()
+                .join("_");
+            format!("{base}_legacy_{suffix}")
         }
     }
 
@@ -80,7 +88,7 @@ impl BasicSnippet for TotalAmountMainLoop {
             library.import(Box::new(AddAllAmountsAndCheckTimeLock {
                 digest_source: self.digest_source,
                 release_date: self.release_date,
-                legacy_digest: self.legacy_digest,
+                legacy_digests: self.legacy_digests.clone(),
             }));
 
         let field_coins = field!(Utxo::coins);

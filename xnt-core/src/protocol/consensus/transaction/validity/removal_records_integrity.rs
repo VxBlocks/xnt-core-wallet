@@ -1442,6 +1442,6 @@ mod tests {
 
     test_program_snapshot!(
         RemovalRecordsIntegrity,
-        "76856aecc10cd516f5fda8cc380d531669fb59466b9cce19c7ddefb65391adf4613c397d5fa62792"
+        "22096d01b54bf8ca4d8203515cbf0207803b707086cad8d3889a638fb2edb5012c9c452a4d065644"
     );
 }

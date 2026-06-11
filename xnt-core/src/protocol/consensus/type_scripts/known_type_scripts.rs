@@ -36,12 +36,12 @@ pub(crate) fn match_type_script_and_generate_witness(
         NativeCurrencyWitness::new(transaction_kernel, salted_input_utxos, salted_output_utxos)
             .type_script_and_witness()
     } else if type_script_hash == TimeLock.hash()
-        || type_script_hash == TimeLock::legacy_type_script_hash()
+        || TimeLock::historical_type_script_hashes().contains(&type_script_hash)
     {
         TimeLockWitness::new(transaction_kernel, salted_input_utxos, salted_output_utxos)
             .type_script_and_witness()
     } else if type_script_hash == TimeLockV2.hash()
-        || type_script_hash == TimeLockV2::legacy_type_script_hash()
+        || TimeLockV2::historical_type_script_hashes().contains(&type_script_hash)
     {
         TimeLockV2Witness::new(transaction_kernel, salted_input_utxos, salted_output_utxos)
             .type_script_and_witness()
@@ -99,10 +99,10 @@ pub(crate) fn is_known_type_script_with_valid_state(coin: &Coin) -> bool {
 /// classifies them as unknown type scripts and never lists them as available.
 fn is_legacy_type_script_with_valid_state(coin: &Coin) -> bool {
     let hash = coin.type_script_hash;
-    if hash == NativeCurrency::legacy_type_script_hash() {
+    if NativeCurrency::historical_type_script_hashes().contains(&hash) {
         NativeCurrencyAmount::decode(&coin.state).is_ok()
-    } else if hash == TimeLock::legacy_type_script_hash()
-        || hash == TimeLockV2::legacy_type_script_hash()
+    } else if TimeLock::historical_type_script_hashes().contains(&hash)
+        || TimeLockV2::historical_type_script_hashes().contains(&hash)
     {
         Timestamp::decode(&coin.state).is_ok()
     } else {
@@ -117,9 +117,9 @@ fn is_legacy_type_script_with_valid_state(coin: &Coin) -> bool {
 /// is not mistakenly treated as immediately spendable.
 pub(crate) fn is_timelock_type_script_hash(type_script_hash: Digest) -> bool {
     type_script_hash == TimeLock.hash()
-        || type_script_hash == TimeLock::legacy_type_script_hash()
         || type_script_hash == TimeLockV2.hash()
-        || type_script_hash == TimeLockV2::legacy_type_script_hash()
+        || TimeLock::historical_type_script_hashes().contains(&type_script_hash)
+        || TimeLockV2::historical_type_script_hashes().contains(&type_script_hash)
 }
 
 /// Map a coin's (possibly legacy) type-script hash to the hash of the V1 program
@@ -139,11 +139,11 @@ pub(crate) fn current_program_hash(type_script_hash: Digest) -> Digest {
     if NativeCurrency::is_native_currency(type_script_hash) {
         NativeCurrency.hash()
     } else if type_script_hash == TimeLock.hash()
-        || type_script_hash == TimeLock::legacy_type_script_hash()
+        || TimeLock::historical_type_script_hashes().contains(&type_script_hash)
     {
         TimeLock.hash()
     } else if type_script_hash == TimeLockV2.hash()
-        || type_script_hash == TimeLockV2::legacy_type_script_hash()
+        || TimeLockV2::historical_type_script_hashes().contains(&type_script_hash)
     {
         TimeLockV2.hash()
     } else {
@@ -155,11 +155,11 @@ pub(crate) fn typescript_name(type_script_hash: Digest) -> &'static str {
     if NativeCurrency::is_native_currency(type_script_hash) {
         "native currency"
     } else if type_script_hash == TimeLock.hash()
-        || type_script_hash == TimeLock::legacy_type_script_hash()
+        || TimeLock::historical_type_script_hashes().contains(&type_script_hash)
     {
         "time lock"
     } else if type_script_hash == TimeLockV2.hash()
-        || type_script_hash == TimeLockV2::legacy_type_script_hash()
+        || TimeLockV2::historical_type_script_hashes().contains(&type_script_hash)
     {
         "time lock v2"
     } else {
@@ -196,21 +196,25 @@ mod tests {
         let inp = SaltedUtxos::empty();
         let out = SaltedUtxos::empty();
 
-        for (legacy, expected_program) in [
+        for (old, expected_program) in [
             (
                 NativeCurrency::legacy_type_script_hash(),
                 NativeCurrency.hash(),
             ),
             (TimeLock::legacy_type_script_hash(), TimeLock.hash()),
             (TimeLockV2::legacy_type_script_hash(), TimeLockV2.hash()),
+            // v3 (UpgradeVM-era) hashes fold the same way.
+            (NativeCurrency::v3_type_script_hash(), NativeCurrency.hash()),
+            (TimeLock::v3_type_script_hash(), TimeLock.hash()),
+            (TimeLockV2::v3_type_script_hash(), TimeLockV2.hash()),
         ] {
             let tsaw = match_type_script_and_generate_witness(
-                legacy,
+                old,
                 kernel.clone(),
                 inp.clone(),
                 out.clone(),
             )
-            .expect("legacy hash must produce a type-script witness (v1)");
+            .expect("legacy/v3 hash must produce a type-script witness (v1)");
             assert_eq!(expected_program, tsaw.program.hash());
         }
     }
@@ -229,6 +233,10 @@ mod tests {
             (TimeLock::legacy_type_script_hash(), TimeLock.hash()),
             (TimeLockV2.hash(), TimeLockV2.hash()),
             (TimeLockV2::legacy_type_script_hash(), TimeLockV2.hash()),
+            // v3 (UpgradeVM-era) hashes fold onto the same current programs.
+            (NativeCurrency::v3_type_script_hash(), NativeCurrency.hash()),
+            (TimeLock::v3_type_script_hash(), TimeLock.hash()),
+            (TimeLockV2::v3_type_script_hash(), TimeLockV2.hash()),
         ] {
             assert_eq!(expected, current_program_hash(input));
         }
@@ -245,26 +253,33 @@ mod tests {
         let inp = SaltedUtxos::empty();
         let out = SaltedUtxos::empty();
 
-        let nc = match_type_script_and_generate_witness_v2(
+        for nc_old in [
             NativeCurrency::legacy_type_script_hash(),
-            kernel.clone(),
-            inp.clone(),
-            out.clone(),
-        )
-        .expect("legacy NC must produce a v2 witness");
-        assert_eq!(NativeCurrency.hash(), nc.program.hash());
-
-        for legacy in [
-            TimeLock::legacy_type_script_hash(),
-            TimeLockV2::legacy_type_script_hash(),
+            NativeCurrency::v3_type_script_hash(),
         ] {
-            let tsaw = match_type_script_and_generate_witness_v2(
-                legacy,
+            let nc = match_type_script_and_generate_witness_v2(
+                nc_old,
                 kernel.clone(),
                 inp.clone(),
                 out.clone(),
             )
-            .expect("legacy time-lock must produce a v2 witness");
+            .expect("legacy/v3 NC must produce a v2 witness");
+            assert_eq!(NativeCurrency.hash(), nc.program.hash());
+        }
+
+        for old in [
+            TimeLock::legacy_type_script_hash(),
+            TimeLockV2::legacy_type_script_hash(),
+            TimeLock::v3_type_script_hash(),
+            TimeLockV2::v3_type_script_hash(),
+        ] {
+            let tsaw = match_type_script_and_generate_witness_v2(
+                old,
+                kernel.clone(),
+                inp.clone(),
+                out.clone(),
+            )
+            .expect("legacy/v3 time-lock must produce a v2 witness");
             assert_eq!(TimeLockV2.hash(), tsaw.program.hash());
         }
     }

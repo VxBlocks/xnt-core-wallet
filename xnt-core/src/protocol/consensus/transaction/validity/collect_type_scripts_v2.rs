@@ -43,26 +43,41 @@ const MAX_NUM_INPUTS_AND_OUTPUTS: usize = 100_000;
 /// less than this number.
 const MAX_NUM_COINS_PER_UTXOS: usize = 100_000;
 
-/// The V3 remap table — single source of truth.
+/// The remap table — single source of truth.
 ///
-/// Coins committed before the `UpgradeVM` hard fork carry pre-v3 type-script
-/// hashes that no runnable program reproduces. Each entry maps such a hash onto
-/// its current counterpart so the SingleProof layer demands a satisfiable proof:
-///   legacy NativeCurrency        -> NativeCurrency.hash()
-///   current + legacy TimeLock    -> TimeLockV2.hash()
-///   legacy TimeLockV2            -> TimeLockV2.hash()
+/// Coins committed before a VM upgrade carry stale type-script hashes that no
+/// runnable program reproduces. Each entry maps such a hash onto its current
+/// counterpart so the SingleProof layer demands a satisfiable proof. Two
+/// historical eras are recognized:
+///   pre-`UpgradeVM` (legacy) NativeCurrency / TimeLock / TimeLockV2, and
+///   `UpgradeVM` (v3) NativeCurrency / TimeLock / TimeLockV2,
+/// each folded onto the current (v4) `NativeCurrency.hash()` / `TimeLockV2.hash()`:
+///   legacy + v3 NativeCurrency   -> NativeCurrency.hash()
+///   current + legacy + v3 TimeLock -> TimeLockV2.hash()
+///   legacy + v3 TimeLockV2        -> TimeLockV2.hash()
 ///
 /// Consumed in lockstep by three mirrors that must agree: the host-side
 /// [`CollectTypeScriptsV2Witness::output`], the TASM `v2_remap_block`, and the
 /// rust `source()` shadow. Order is load-bearing for the TASM (it sets the
 /// chained comparison order); the targets are distinct from every old hash, so
 /// the chaining is order-independent for correctness.
-fn v3_remap_pairs() -> [(Digest, Digest); 4] {
+///
+/// Note: under v4 the length-bound was lifted for single-word coin state, so the
+/// current `TimeLock.hash()` collides with the pre-`UpgradeVM` legacy TimeLock
+/// hash. The `(TimeLock.hash(), …)` and `(TimeLock::legacy_type_script_hash(), …)`
+/// rows therefore share a key; this is benign — both fold to `TimeLockV2.hash()`
+/// and the output list de-duplicates (the second comparison is a no-op).
+fn v3_remap_pairs() -> [(Digest, Digest); 7] {
     [
+        // pre-UpgradeVM (legacy) era
         (NativeCurrency::legacy_type_script_hash(), NativeCurrency.hash()),
         (TimeLock.hash(), TimeLockV2.hash()),
         (TimeLock::legacy_type_script_hash(), TimeLockV2.hash()),
         (TimeLockV2::legacy_type_script_hash(), TimeLockV2.hash()),
+        // UpgradeVM (v3) era
+        (NativeCurrency::v3_type_script_hash(), NativeCurrency.hash()),
+        (TimeLock::v3_type_script_hash(), TimeLockV2.hash()),
+        (TimeLockV2::v3_type_script_hash(), TimeLockV2.hash()),
     ]
 }
 
@@ -859,13 +874,14 @@ mod tests {
     #[test]
     fn all_old_hashes_in_one_witness_remap_and_dedup_consistently() {
         // The full remap exercised on a SINGLE witness carrying every old hash the
-        // v3 remap recognizes — legacy NativeCurrency, current TimeLock, legacy
-        // TimeLock, and legacy TimeLockV2 — plus a duplicate, spread across two
-        // UTXOs. The arbitrary proptests never produce legacy-tagged coins and the
-        // other unit tests use one old hash in isolation, so this is the only test
-        // that pins (a) host `output()` == rust shadow == TASM on legacy inputs,
-        // (b) the chained remap + dedup collapsing to exactly {NativeCurrency,
-        // TimeLockV2}, and (c) no old hash surviving verbatim.
+        // remap recognizes — across BOTH historical eras: pre-UpgradeVM (legacy)
+        // NativeCurrency / TimeLock / TimeLockV2, current TimeLock, and the
+        // UpgradeVM (v3) NativeCurrency / TimeLock / TimeLockV2 — plus a duplicate,
+        // spread across UTXOs. The arbitrary proptests never produce legacy-tagged
+        // coins and the other unit tests use one old hash in isolation, so this is
+        // the only test that pins (a) host `output()` == rust shadow == TASM on
+        // legacy + v3 inputs, (b) the chained remap + dedup collapsing to exactly
+        // {NativeCurrency, TimeLockV2}, and (c) no old hash surviving verbatim.
         let nc_amount = NativeCurrencyAmount::from_nau(100);
         let timelock_coin = |h: Digest| Coin {
             type_script_hash: h,
@@ -877,6 +893,10 @@ mod tests {
             nc_amount
                 .to_native_coins_with_type_script_hash(NativeCurrency::legacy_type_script_hash())
                 .into_iter()
+                .chain(
+                    nc_amount
+                        .to_native_coins_with_type_script_hash(NativeCurrency::v3_type_script_hash()),
+                )
                 .chain([timelock_coin(TimeLock::legacy_type_script_hash())])
                 .collect_vec(),
         );
@@ -886,6 +906,8 @@ mod tests {
                 timelock_coin(TimeLock.hash()), // current TimeLock -> TimeLockV2
                 timelock_coin(TimeLockV2::legacy_type_script_hash()), // legacy V2 -> TimeLockV2
                 timelock_coin(TimeLock::legacy_type_script_hash()), // duplicate
+                timelock_coin(TimeLock::v3_type_script_hash()), // v3 TimeLock -> TimeLockV2
+                timelock_coin(TimeLockV2::v3_type_script_hash()), // v3 TimeLockV2 -> TimeLockV2
             ],
         );
 
@@ -927,11 +949,16 @@ mod tests {
                 "remapped target must be present: {present}"
             );
         }
+        // Every historical (non-current) era hash must be remapped, not collected
+        // verbatim. Note under v4 the current `TimeLock.hash()` equals the pre-v3
+        // legacy TimeLock (`4b4d2519…`), which folds onto `TimeLockV2.hash()`.
         for old in [
             NativeCurrency::legacy_type_script_hash(),
             TimeLock::legacy_type_script_hash(),
             TimeLockV2::legacy_type_script_hash(),
-            TimeLock.hash(),
+            NativeCurrency::v3_type_script_hash(),
+            TimeLock::v3_type_script_hash(),
+            TimeLockV2::v3_type_script_hash(),
         ] {
             let values = old.values().to_vec();
             assert!(
@@ -1094,6 +1121,6 @@ mod tests {
         // tagged with the legacy TimeLock hash to TimeLockV2.hash() before
         // both the de-duplication check and the list push. Used by
         // SingleProofV2's GenerateCollectTypeScriptsClaim (phase 6).
-        "253714df987bb7ff9c017de9cd25683274ec0597f9879a31dfc6a7faac10a7e32ca2fc8e26316575"
+        "1d33643dc5086e915e44d720af4a1efa195254aee6497166f5055a7bcb0d8313ce70f77fe0632c4e"
     );
 }
