@@ -112,7 +112,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -123,7 +123,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -684,7 +684,7 @@ version = "3.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "faf9468729b8cbcea668e36183cb69d317348c2e08e994829fb56ebfdfbaac34"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1136,7 +1136,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "neptune-privacy"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "aead",
  "aes-gcm",
@@ -2429,7 +2429,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3274,7 +3274,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.11.0",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3896,7 +3896,8 @@ dependencies = [
 
 [[package]]
 name = "tasm-lib"
-version = "3.0.0"
+version = "4.0.0"
+source = "git+https://github.com/neptuneprivacy/tasm-lib.git?tag=v4.0.0#f6d59fea6b70de1327b3b7a44965f46619831c04"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -3917,7 +3918,8 @@ dependencies = [
 
 [[package]]
 name = "tasm-object-derive"
-version = "3.0.0"
+version = "4.0.0"
+source = "git+https://github.com/neptuneprivacy/tasm-lib.git?tag=v4.0.0#f6d59fea6b70de1327b3b7a44965f46619831c04"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3934,7 +3936,7 @@ dependencies = [
  "getrandom 0.3.4",
  "once_cell",
  "rustix 1.1.3",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4456,9 +4458,9 @@ dependencies = [
 
 [[package]]
 name = "triton-air"
-version = "3.0.0"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80e6cb58505a957367eab288c2d1c9357963b65d244c3868a518a7ffcdb6fe40"
+checksum = "6fd3590c1d4e7593ea82dd4948c7634f55b7883b625b564d4f5c85c895efb032"
 dependencies = [
  "arbitrary",
  "itertools 0.14.0",
@@ -4470,9 +4472,9 @@ dependencies = [
 
 [[package]]
 name = "triton-constraint-builder"
-version = "3.0.0"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "13821f7d62aa84342a1bd2228b654f17b43a09e2e5feb27d3949c3398e842564"
+checksum = "6c62236ba1926b6821a76c002a9b2c2a18d04f18c2b2b895e79bd5ca55b4d124"
 dependencies = [
  "itertools 0.14.0",
  "prettyplease",
@@ -4488,9 +4490,9 @@ dependencies = [
 
 [[package]]
 name = "triton-constraint-circuit"
-version = "3.0.0"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f25b8d4522c9c763790315757349bc95c3ba01d3601da7ca1b967f962527de49"
+checksum = "ca0f73a750db396343e56cff6b0ad8269bae234a4e4df6a1b982138134073f7d"
 dependencies = [
  "arbitrary",
  "itertools 0.14.0",
@@ -4503,9 +4505,9 @@ dependencies = [
 
 [[package]]
 name = "triton-isa"
-version = "3.0.0"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "451e6fd5114efad0ce516b0fb238e08e69316da7710cf9c93242b0da8522c5a2"
+checksum = "a90c9f799f184aeafcce0023ffec7fe8233c4deff3f4e9cc7a4c1c8b9a2661f7"
 dependencies = [
  "arbitrary",
  "get-size2",
@@ -4522,9 +4524,9 @@ dependencies = [
 
 [[package]]
 name = "triton-vm"
-version = "3.0.0"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ee696faa7d4b3ece4bda435894f416bbcbf097285fa301b1b47a0cf003c1a8e4"
+checksum = "2bc97882d4489746f0c94d07658c6c2c4c5e9e8525639112c5d7b6b74efe8301"
 dependencies = [
  "arbitrary",
  "colored",
@@ -5236,7 +5238,7 @@ checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 
 [[package]]
 name = "xnt-core-cli"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "arbitrary",
@@ -5259,7 +5261,7 @@ dependencies = [
 
 [[package]]
 name = "xnt-dashboard"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "anyhow",
  "bytesize",
@@ -5280,7 +5282,7 @@ dependencies = [
 
 [[package]]
 name = "xnt-rpc-client"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "async-trait",
  "neptune-privacy",
@@ -5291,7 +5293,7 @@ dependencies = [
 
 [[package]]
 name = "xnt-rpc-macros"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "convert_case 0.8.0",
  "quote",
@@ -5300,7 +5302,7 @@ dependencies = [
 
 [[package]]
 name = "xnt-sdk"
-version = "0.2.0"
+version = "0.2.3"
 dependencies = [
  "aead",
  "aes-gcm",

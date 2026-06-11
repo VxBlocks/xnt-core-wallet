@@ -15,6 +15,7 @@ use crate::api::export::AdditionRecord;
 use crate::api::export::Utxo;
 use crate::protocol::consensus::block::block_validation_error::BlockValidationError;
 use crate::protocol::consensus::consensus_rule_set::BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET;
+use crate::protocol::consensus::consensus_rule_set::BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET;
 use crate::protocol::consensus::type_scripts::native_currency::NativeCurrency;
 use crate::protocol::proof_abstractions::mast_hash::HasDiscriminant;
 use crate::protocol::proof_abstractions::mast_hash::MastHash;
@@ -57,14 +58,18 @@ impl BlockKernel {
         // The guesser-fee UTXO is *re-derived* (not read back as a stored
         // addition record) every time the mutator set is advanced past this
         // block, so its native-currency `type_script_hash` must match what was
-        // committed when the block was produced. Blocks produced before the
-        // `UpgradeVM` fork embed the legacy NativeCurrency hash (Triton VM v3
-        // changed `NativeCurrency.hash()`); reproducing them with the current
-        // hash would make every pre-fork parent's `mutator_set_accumulator_after`
-        // diverge from the child's stored `mutator_set_hash`. Post-fork blocks
-        // use the current hash.
+        // committed when the block was produced. Each VM upgrade re-hashed
+        // `NativeCurrency`, so the embedded hash is era-specific and reproducing a
+        // block with the wrong-era hash would make that parent's
+        // `mutator_set_accumulator_after` diverge from the child's stored
+        // `mutator_set_hash`. Three eras:
+        //   pre-UpgradeVM (pre-v3) -> legacy hash,
+        //   UpgradeVM (v3)         -> v3 hash,
+        //   UpgradeVMv4 (current)  -> current hash.
         let nc_type_script_hash = if self.header.height < BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET {
             NativeCurrency::legacy_type_script_hash()
+        } else if self.header.height < BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET {
+            NativeCurrency::v3_type_script_hash()
         } else {
             NativeCurrency.hash()
         };

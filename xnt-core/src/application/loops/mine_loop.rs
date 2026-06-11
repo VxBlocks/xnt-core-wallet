@@ -2062,6 +2062,36 @@ pub(crate) mod tests {
         assert!(composer_outputs.is_empty());
     }
 
+    /// Guards the production side of the v4 coinbase mining break (id 1000033).
+    ///
+    /// While `MINING_REWARD_TIME_LOCK_PERIOD == 0` the NativeCurrency coinbase
+    /// rule asserts the time-locked amount is zero. `CoinbaseDistribution::
+    /// try_new` enforces this at construction, so the composer can never emit a
+    /// time-locked coinbase — even under v4 where `TimeLock.hash()` collides
+    /// with `TIME_LOCK_HASH` and a time-locked coinbase would otherwise trip
+    /// `COINBASE_TIMELOCK_INSUFFICIENT`. (The test's *arbitrary* block generator
+    /// bypasses this path; that is fixed separately in `primitive_witness`.)
+    #[test]
+    fn disabled_coinbase_timelock_cannot_be_constructed() {
+        use crate::protocol::consensus::block::MINING_REWARD_TIME_LOCK_PERIOD;
+
+        assert_eq!(
+            Timestamp::zero(),
+            MINING_REWARD_TIME_LOCK_PERIOD,
+            "test assumes the coinbase time-lock is disabled (period == 0)",
+        );
+
+        let mut rng = rand::rng();
+        let result = CoinbaseDistribution::try_new(vec![
+            CoinbaseOutput::timelocked(SymmetricKey::from_seed(rng.random()).into(), 500),
+            CoinbaseOutput::liquid(SymmetricKey::from_seed(rng.random()).into(), 500),
+        ]);
+        assert!(
+            result.is_err(),
+            "a time-locked coinbase distribution must be rejected while the rule is disabled",
+        );
+    }
+
     #[test]
     fn composer_outputs_has_length_two_if_guesser_fraction_is_between_0_and_1() {
         let mut rng = rand::rng();

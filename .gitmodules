@@ -1,4 +1,0 @@
-[submodule "tasm-lib"]
-	path = tasm-lib
-	url = https://github.com/neptuneprivacy/tasm-lib.git
-	branch = fix/prover-controlled-length-words

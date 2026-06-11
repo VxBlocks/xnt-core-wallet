@@ -740,6 +740,6 @@ mod tests {
 
     test_program_snapshot!(
         CollectTypeScripts,
-        "02b3ce0531805bd7625c55dccefa6e3c7406fac78932f18da866334f8e55dd48c2b947476dac2665"
+        "625772099716521d3aa95dac5cf1ec40c12b114bb537a4b0446e0941887bb940b4abdb927c81a099"
     );
 }
