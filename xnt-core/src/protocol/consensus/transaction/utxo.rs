@@ -462,4 +462,53 @@ mod tests {
         assert!(!utxo.can_spend_at(Timestamp::now()));
         assert!(utxo.can_spend_at(release + Timestamp::days(1)));
     }
+
+    // ---- v3 (UpgradeVM-era) counterparts of the legacy spendability tests ----
+    // These exercise the *v3* remap layer (the one added for the v4 fork), which
+    // the legacy tests above never touch.
+
+    #[test]
+    fn v3_native_currency_coin_counts_toward_balance() {
+        let amount = NativeCurrencyAmount::coins(42);
+        let v3_coin = Coin::new_native_currency_with_type_script_hash(
+            NativeCurrency::v3_type_script_hash(),
+            amount,
+        );
+        let utxo = Utxo::new(Digest::default(), vec![v3_coin]);
+
+        assert!(utxo.has_native_currency());
+        assert_eq!(amount, utxo.get_native_currency_amount());
+    }
+
+    #[test]
+    fn v3_native_currency_utxo_is_known_and_spendable() {
+        let v3_coin = Coin::new_native_currency_with_type_script_hash(
+            NativeCurrency::v3_type_script_hash(),
+            NativeCurrencyAmount::coins(1),
+        );
+        let utxo = Utxo::new(Digest::default(), vec![v3_coin]);
+
+        assert!(utxo.all_type_script_states_are_valid());
+        assert!(utxo.can_spend_at(Timestamp::now()));
+    }
+
+    #[test]
+    fn v3_timelocked_utxo_respects_release_date() {
+        let release = Timestamp::now() + Timestamp::days(30);
+        let v3_timelock = Coin {
+            type_script_hash: TimeLock::v3_type_script_hash(),
+            state: vec![release.0],
+        };
+        let utxo = Utxo::new(
+            Digest::default(),
+            vec![
+                Coin::new_native_currency(NativeCurrencyAmount::coins(1)),
+                v3_timelock,
+            ],
+        );
+
+        assert!(utxo.all_type_script_states_are_valid());
+        assert!(!utxo.can_spend_at(Timestamp::now()));
+        assert!(utxo.can_spend_at(release + Timestamp::days(1)));
+    }
 }

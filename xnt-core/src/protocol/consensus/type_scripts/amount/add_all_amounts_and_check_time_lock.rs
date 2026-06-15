@@ -17,18 +17,19 @@ use crate::protocol::proof_abstractions::tasm::push_digest_reversed;
 use crate::BFieldElement;
 
 /// Body for inner loop, running over all coins within one UTXO.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct AddAllAmountsAndCheckTimeLock {
     pub(crate) digest_source: DigestSource,
     pub(crate) release_date: StaticAllocation,
-    /// An optional *additional* type-script hash whose coins are also counted
-    /// as native currency, OR'd into the primary `digest_source` match.
+    /// Additional (historical) type-script hashes whose coins are also counted
+    /// as native currency, each OR'd into the primary `digest_source` match.
     ///
-    /// Used by `NativeCurrency` to keep coins committed before the `UpgradeVM`
-    /// hard fork — which carry `NativeCurrency::legacy_type_script_hash()` —
-    /// spendable after the VM upgrade re-hashed the program. `None` produces
+    /// Used by `NativeCurrency` to keep coins committed before a VM upgrade —
+    /// which carry the pre-`UpgradeVM` legacy hash and/or the `UpgradeVM` (v3)
+    /// hash (see `NativeCurrency::historical_type_script_hashes`) — spendable
+    /// after each upgrade re-hashed the program. An empty list produces
     /// byte-identical code to the pre-remap snippet.
-    pub(crate) legacy_digest: Option<Digest>,
+    pub(crate) legacy_digests: Vec<Digest>,
 }
 
 impl AddAllAmountsAndCheckTimeLock {
@@ -67,14 +68,23 @@ impl BasicSnippet for AddAllAmountsAndCheckTimeLock {
     }
 
     fn entrypoint(&self) -> String {
-        // The emitted code differs by `legacy_digest` (the OR-in-legacy-match
-        // block). `Library::import` dedups snippets by entrypoint name only, so
-        // the name must vary with the digest — otherwise importing two variants
-        // into one library would silently reuse whichever was imported first.
+        // The emitted code differs by `legacy_digests` (one OR-in-legacy-match
+        // block per digest). `Library::import` dedups snippets by entrypoint name
+        // only, so the name must vary with the digests — otherwise importing two
+        // variants into one library would silently reuse whichever was imported
+        // first. An empty list keeps the base name, so non-remap users emit
+        // byte-identical code.
         let base = "neptune_type_script_total_amount_and_check_timelock";
-        match self.legacy_digest {
-            Some(digest) => format!("{base}_legacy_{}", digest.to_hex()),
-            None => base.to_string(),
+        if self.legacy_digests.is_empty() {
+            base.to_string()
+        } else {
+            let suffix = self
+                .legacy_digests
+                .iter()
+                .map(|d| d.to_hex())
+                .collect::<Vec<_>>()
+                .join("_");
+            format!("{base}_legacy_{suffix}")
         }
     }
 
@@ -102,29 +112,35 @@ impl BasicSnippet for AddAllAmountsAndCheckTimeLock {
 
         let push_timelock_digest = push_digest_reversed(Self::TIME_LOCK_HASH);
 
-        // V3 REMAP: optionally OR a second (legacy) type-script-hash match into
-        // the native-currency check. When `legacy_digest` is `None`, this emits
-        // no instructions, keeping the snippet byte-identical for non-remap
-        // users (e.g. `GetTotalAndTimeLockedAmounts`).
-        let or_in_legacy_match = match self.legacy_digest {
-            Some(legacy_digest) => {
-                let push_legacy_digest = push_digest_reversed(legacy_digest);
+        // REMAP: optionally OR one or more (historical) type-script-hash matches
+        // into the native-currency check, one block per `legacy_digests` entry.
+        // When the list is empty, this emits no instructions, keeping the snippet
+        // byte-identical for non-remap users (e.g. `GetTotalAndTimeLockedAmounts`).
+        // Each block re-reads the coin's `type_script_hash` and `add`s its match
+        // bit to the running accumulator; the stack shape is unchanged across
+        // blocks (the accumulator stays on top where `is_primary_match` was), so
+        // `dup 14` reaches `*coins[j]_si` identically every iteration. All matches
+        // are mutually exclusive (a coin carries one hash), so the sum stays {0,1}.
+        let or_in_legacy_match: Vec<LabelledInstruction> = self
+            .legacy_digests
+            .iter()
+            .flat_map(|legacy_digest| {
+                let push_legacy_digest = push_digest_reversed(*legacy_digest);
                 triton_asm! {
-                    // _ M j *coins[j]_si [amount] [tl] [utxo_amount] utxo_is_timelocked is_primary_match
+                    // _ M j *coins[j]_si [amount] [tl] [utxo_amount] utxo_is_timelocked acc
                     dup 14 push 1 add
-                    // _ ... is_primary_match *coins[j]
+                    // _ ... acc *coins[j]
                     {&field_type_script_hash}
                     push {Digest::LEN-1} add read_mem {Digest::LEN} pop 1
-                    // _ ... is_primary_match [type_script_hash]
+                    // _ ... acc [type_script_hash]
                     {&push_legacy_digest}
                     {&digest_eq}
-                    // _ ... is_primary_match (type_script_hash == legacy_digest)
+                    // _ ... acc (type_script_hash == legacy_digest)
                     add
-                    // _ ... (is_primary_match + is_legacy_match)  // matches are mutually exclusive -> {0,1}
+                    // _ ... (acc + is_legacy_match)  // mutually exclusive -> stays {0,1}
                 }
-            }
-            None => triton_asm! {},
-        };
+            })
+            .collect();
 
         triton_asm! {
 

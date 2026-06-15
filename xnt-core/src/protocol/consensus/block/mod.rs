@@ -637,8 +637,8 @@ impl Block {
         }
 
         // 1.a)
-        // Skip claim validation for proof-version-0 blocks (Reboot/HardforkAlpha),
-        // whose proofs the current (v3) verifier cannot reproduce.
+        // Skip claim validation for checkpointed (pre-v5) blocks, whose superseded
+        // proof format the current (v5) verifier cannot check.
         if !consensus_rule_set.proofs_are_trusted() {
             for required_claim in BlockAppendix::consensus_claims(self.body(), consensus_rule_set) {
                 if !self.appendix().contains(&required_claim) {
@@ -658,7 +658,7 @@ impl Block {
         };
 
         // 1.d)
-        // Skip proof verification for proof-version-0 blocks (Reboot/HardforkAlpha).
+        // Skip proof verification for checkpointed (pre-v5) blocks.
         if !consensus_rule_set.proofs_are_trusted() {
             if !BlockProgram::verify(
                 self.body(),
@@ -987,6 +987,19 @@ impl Block {
     ) -> Result<Vec<AdditionRecord>, BlockValidationError> {
         let block_hash = self.hash();
         self.kernel.guesser_fee_addition_records(block_hash)
+    }
+
+    /// Guesser-fee addition records computed for every historical NativeCurrency
+    /// era hash (legacy / v3 / current). Used by mutator-set rollback to revert a
+    /// block whose guesser fee was committed under a different fork configuration
+    /// than this binary currently derives (e.g. blocks mined past the v4 fork by a
+    /// node still running the v3 binary, then upgraded). See
+    /// [`BlockKernel::guesser_fee_addition_records_all_eras`].
+    pub(crate) fn guesser_fee_addition_records_all_eras(
+        &self,
+    ) -> Result<Vec<AdditionRecord>, BlockValidationError> {
+        let block_hash = self.hash();
+        self.kernel.guesser_fee_addition_records_all_eras(block_hash)
     }
 
     /// Return the mutator set update corresponding to this block, which sends
@@ -2046,6 +2059,71 @@ pub(crate) mod tests {
                 ars.iter().all(|ar| additions.contains(ar)),
                 "All addition records must be present in block's mutator set update"
             );
+        }
+
+        #[apply(shared_tokio_runtime)]
+        async fn guesser_fee_uses_era_correct_native_currency_hash() {
+            // The guesser-fee UTXO is RE-DERIVED whenever the mutator set is
+            // advanced past a block, so its native-currency type_script_hash must
+            // match the era in which the block was produced — each VM upgrade
+            // re-hashed NativeCurrency. Pin the 3-way height split:
+            // pre-UpgradeVM -> legacy, UpgradeVM (v3) -> v3, UpgradeVMv4 -> current.
+            use crate::protocol::consensus::consensus_rule_set::BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET;
+            use crate::protocol::consensus::consensus_rule_set::BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET;
+            use crate::protocol::consensus::type_scripts::native_currency::NativeCurrency;
+            use crate::protocol::proof_abstractions::tasm::program::ConsensusProgram;
+
+            let network = Network::Main;
+            let mut rng = rand::rng();
+            let genesis_block = Block::genesis(network);
+            let a_key = GenerationSpendingKey::derive_from_seed(rng.random());
+            let guesser_address = GenerationReceivingAddress::derive_from_seed(rng.random());
+            let (block1, _) = make_mock_block_with_puts_and_guesser_preimage_and_guesser_fraction(
+                &genesis_block,
+                vec![],
+                vec![],
+                None,
+                a_key,
+                rng.random(),
+                (0.4, guesser_address.into()),
+                network,
+            )
+            .await;
+
+            let v3_start = BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET;
+            let v4_start = BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET;
+            let cases = [
+                (
+                    v3_start.previous().unwrap(),
+                    NativeCurrency::legacy_type_script_hash(),
+                    "pre-UpgradeVM -> legacy",
+                ),
+                (
+                    v3_start,
+                    NativeCurrency::v3_type_script_hash(),
+                    "UpgradeVM start -> v3",
+                ),
+                (
+                    v4_start.previous().unwrap(),
+                    NativeCurrency::v3_type_script_hash(),
+                    "last UpgradeVM -> v3",
+                ),
+                (v4_start, NativeCurrency.hash(), "UpgradeVMv4 start -> current"),
+            ];
+            for (height, expected_nc, label) in cases {
+                let mut block = block1.clone();
+                block.kernel.header.height = height;
+                let utxos = block.kernel.guesser_fee_utxos().unwrap();
+                assert!(!utxos.is_empty(), "{label}: must have a guesser-fee UTXO");
+                let hashes: Vec<_> = utxos
+                    .iter()
+                    .flat_map(|u| u.coins().iter().map(|c| c.type_script_hash))
+                    .collect();
+                assert!(
+                    hashes.contains(&expected_nc),
+                    "{label} (height {height}): guesser-fee native-currency hash must be the era hash",
+                );
+            }
         }
 
         #[test]

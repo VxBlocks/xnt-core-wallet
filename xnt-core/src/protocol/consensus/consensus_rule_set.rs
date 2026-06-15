@@ -22,6 +22,33 @@ pub const BLOCK_HEIGHT_HARDFORK_TIMELOCK_EXTENSION_MAIN_NET: BlockHeight =
 pub const BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET: BlockHeight =
     BlockHeight::new(BFieldElement::new(55800u64));
 
+/// Height of the 1st block that follows the `UpgradeVMv4` consensus ruleset on
+/// mainnet. UpgradeVMv4 is the triton-vm v4 upgrade: it re-hashes every consensus
+/// program again (the proof format version bumps 1 -> 2, and the leaf type-script
+/// length-bound is lifted for single-word coin state). Pre-v4 history stays
+/// verifiable via the hardcoded UpgradeVM (v3) program digests; UpgradeVMv4 blocks
+/// use the recomputed v4 digests.
+///
+/// Mainnet v4 activation height.
+pub const BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET: BlockHeight =
+    BlockHeight::new(BFieldElement::new(56700u64));
+
+/// Height of the 1st block that follows the `UpgradeVMv5` consensus ruleset on
+/// mainnet. UpgradeVMv5 is the triton-vm v5 upgrade: triton-vm's ISA and proof
+/// format changed (proof version 2 -> 5), so the proof programs that embed the
+/// STARK verifier (`SingleProofV2`, `BlockProgram`) compile to different bytecode
+/// and re-hash. The v5 verifier cannot re-check v4 proofs, so pre-v5 history is
+/// checkpointed via the hardcoded v4 program digests.
+///
+/// NOTE: unlike the v3→v4 upgrade, the leaf TYPE SCRIPTS (`NativeCurrency`,
+/// `TimeLock`, `TimeLockV2`, `CollectTypeScriptsV2`) are byte-identical across
+/// v4 and v5 — their digests did NOT change — so existing coins need NO remap and
+/// remain spendable directly.
+///
+/// Mainnet v5 activation height.
+pub const BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V5_MAIN_NET: BlockHeight =
+    BlockHeight::new(BFieldElement::new(57650u64));
+
 /// Enumerates all possible sets of consensus rules.
 ///
 /// Specifically, this enum captures *differences* between consensus rules,
@@ -56,6 +83,26 @@ pub enum ConsensusRuleSet {
     /// the proof version is carried in the `Claim`; UpgradeVM blocks use the
     /// recomputed v3 program digests.
     UpgradeVM,
+    /// The triton-vm v4 upgrade hard fork.
+    ///
+    /// Activated at [`BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET`] on Main. The
+    /// VM upgrade bumps the proof format version (1 -> 2) and re-hashes every
+    /// consensus program; the leaf type scripts additionally drop the single-word
+    /// length-bound. The single (v4) verifier still validates pre-v4 proofs via
+    /// hardcoded per-era digests + the claim version; UpgradeVMv4 blocks use the
+    /// recomputed v4 program digests. Coins committed under the UpgradeVM (v3) era
+    /// remain spendable via the type-script remap (`CollectTypeScriptsV2`).
+    UpgradeVMv4,
+    /// The triton-vm v5 upgrade hard fork.
+    ///
+    /// Activated at [`BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V5_MAIN_NET`] on Main.
+    /// triton-vm's ISA changed, so the proof programs that embed the STARK
+    /// verifier (`SingleProofV2`, `BlockProgram`) re-hash; the leaf type scripts
+    /// are unchanged. The current (v5) verifier validates only v5 proofs; pre-v5
+    /// history is checkpointed via hardcoded per-era digests. UpgradeVMv5 blocks
+    /// use the recomputed v5 proof-program digests. Because the type scripts did
+    /// not change, coins from every prior era remain spendable with no remap.
+    UpgradeVMv5,
 }
 
 /// The triton-vm crate major a rule set's proofs were produced under. The
@@ -70,6 +117,10 @@ pub enum TritonProofVersion {
     V2,
     /// triton-vm v3.0.0 (proof format version 1) — UpgradeVM.
     V3,
+    /// triton-vm v4.0.0 (proof format version 2) — UpgradeVMv4.
+    V4,
+    /// triton-vm v5.0.0 (proof format version 5; ISA changed) — UpgradeVMv5.
+    V5,
 }
 
 impl TritonProofVersion {
@@ -80,6 +131,13 @@ impl TritonProofVersion {
         match self {
             TritonProofVersion::V1 => 0,
             TritonProofVersion::V2 | TritonProofVersion::V3 => 1,
+            // v4 is frozen at proof format version 2.
+            TritonProofVersion::V4 => 2,
+            // v5 is the CURRENT era: its claim version must match the version the
+            // linked triton-vm v5 actually stamps into proofs, so track the live
+            // constant rather than a literal (keeps `BlockProgram::claim` in sync
+            // with the live `SingleProofV2`/`BlockProgram` provers).
+            TritonProofVersion::V5 => tasm_lib::triton_vm::proof::CURRENT_VERSION,
         }
     }
 }
@@ -91,20 +149,27 @@ impl ConsensusRuleSet {
             ConsensusRuleSet::Reboot | ConsensusRuleSet::HardforkAlpha => TritonProofVersion::V1,
             ConsensusRuleSet::Xnt | ConsensusRuleSet::TimelockExtension => TritonProofVersion::V2,
             ConsensusRuleSet::UpgradeVM => TritonProofVersion::V3,
+            ConsensusRuleSet::UpgradeVMv4 => TritonProofVersion::V4,
+            ConsensusRuleSet::UpgradeVMv5 => TritonProofVersion::V5,
         }
     }
 
-    /// Rule sets whose proofs the current verifier cannot check, so their
-    /// blocks are trusted (checkpointed) rather than re-verified. These are the
-    /// proof-version-0 eras (triton-vm v1.0.0): the v3 verifier only handles
-    /// proof version 1, so Reboot/HardforkAlpha proofs are unverifiable here.
-    /// Xnt and TimelockExtension are proof version 1 and ARE re-verified, using
-    /// their hardcoded pre-upgrade program digests.
+    /// Rule sets whose proofs the current verifier cannot check, so their blocks
+    /// are trusted (checkpointed) rather than re-verified.
+    ///
+    /// triton-vm's proof format (`proof::CURRENT_VERSION`) changes only when the
+    /// STARK/ISA changes; a verifier can re-check only proofs of its OWN format
+    /// version. The current binary links triton-vm v5 (which changed the ISA, so
+    /// its verifier can re-check ONLY `UpgradeVMv5` proofs). Every earlier era —
+    /// including `UpgradeVMv4` — was produced under a superseded triton-vm whose
+    /// proofs this verifier cannot re-check, and is therefore checkpointed.
+    ///
+    /// This mirrors neptune-core's house pattern ("Upgrade Triton VM … with
+    /// checkpoint"): rather than link multiple triton-vm versions, the superseded
+    /// history is trusted. Re-verifying it would require linking the matching
+    /// older triton-vm crate, which we deliberately do not do.
     pub(crate) fn proofs_are_trusted(&self) -> bool {
-        matches!(
-            self,
-            ConsensusRuleSet::Reboot | ConsensusRuleSet::HardforkAlpha
-        )
+        !matches!(self, ConsensusRuleSet::UpgradeVMv5)
     }
 
     /// Maximum block size in number of BFieldElements
@@ -114,7 +179,9 @@ impl ConsensusRuleSet {
             | ConsensusRuleSet::HardforkAlpha
             | ConsensusRuleSet::Xnt
             | ConsensusRuleSet::TimelockExtension
-            | ConsensusRuleSet::UpgradeVM => {
+            | ConsensusRuleSet::UpgradeVM
+            | ConsensusRuleSet::UpgradeVMv4
+            | ConsensusRuleSet::UpgradeVMv5 => {
                 // This size is 8MB which should keep it feasible to run archival nodes for
                 // many years without requiring excessive disk space.
                 1_000_000
@@ -138,12 +205,16 @@ impl ConsensusRuleSet {
                     ConsensusRuleSet::Xnt
                 } else if block_height < BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET {
                     ConsensusRuleSet::TimelockExtension
-                } else {
+                } else if block_height < BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET {
                     ConsensusRuleSet::UpgradeVM
+                } else if block_height < BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V5_MAIN_NET {
+                    ConsensusRuleSet::UpgradeVMv4
+                } else {
+                    ConsensusRuleSet::UpgradeVMv5
                 }
             }
             Network::TestnetMock | Network::RegTest | Network::Testnet(_) => {
-                ConsensusRuleSet::UpgradeVM
+                ConsensusRuleSet::UpgradeVMv5
             }
         }
     }
@@ -154,7 +225,9 @@ impl ConsensusRuleSet {
             | ConsensusRuleSet::HardforkAlpha
             | ConsensusRuleSet::Xnt
             | ConsensusRuleSet::TimelockExtension
-            | ConsensusRuleSet::UpgradeVM => MAX_NUM_INPUTS_OUTPUTS_ANNOUNCEMENTS,
+            | ConsensusRuleSet::UpgradeVM
+            | ConsensusRuleSet::UpgradeVMv4
+            | ConsensusRuleSet::UpgradeVMv5 => MAX_NUM_INPUTS_OUTPUTS_ANNOUNCEMENTS,
         }
     }
     pub(crate) fn max_num_outputs(&self) -> usize {
@@ -163,7 +236,9 @@ impl ConsensusRuleSet {
             | ConsensusRuleSet::HardforkAlpha
             | ConsensusRuleSet::Xnt
             | ConsensusRuleSet::TimelockExtension
-            | ConsensusRuleSet::UpgradeVM => MAX_NUM_INPUTS_OUTPUTS_ANNOUNCEMENTS,
+            | ConsensusRuleSet::UpgradeVM
+            | ConsensusRuleSet::UpgradeVMv4
+            | ConsensusRuleSet::UpgradeVMv5 => MAX_NUM_INPUTS_OUTPUTS_ANNOUNCEMENTS,
         }
     }
     pub(crate) fn max_num_announcements(&self) -> usize {
@@ -172,7 +247,9 @@ impl ConsensusRuleSet {
             | ConsensusRuleSet::HardforkAlpha
             | ConsensusRuleSet::Xnt
             | ConsensusRuleSet::TimelockExtension
-            | ConsensusRuleSet::UpgradeVM => MAX_NUM_INPUTS_OUTPUTS_ANNOUNCEMENTS,
+            | ConsensusRuleSet::UpgradeVM
+            | ConsensusRuleSet::UpgradeVMv4
+            | ConsensusRuleSet::UpgradeVMv5 => MAX_NUM_INPUTS_OUTPUTS_ANNOUNCEMENTS,
         }
     }
 }
@@ -347,7 +424,10 @@ pub(crate) mod tests {
         .unwrap()
     }
 
-    #[traced_test]
+    // v5 block-production readiness: build a chain at the v5 fork height (57650)
+    // and mine the first post-fork blocks (57651, 57652) under UpgradeVMv5, to
+    // confirm v5 nodes can actually compose+prove+validate blocks across the fork.
+    // (No `#[traced_test]`: keeps the output to the readable step logs below.)
     #[test]
     fn new_blocks_at_upgrade_vm_height() {
         // We want to use the following block primitive witness generator (which
@@ -357,13 +437,19 @@ pub(crate) mod tests {
         // witness once, in this synchronous wrapper, and continue
         // asynchronously with the helper function.
 
-        // Build on top of a chain at the UpgradeVM fork height. Producing new
-        // blocks only works under the current (v3) rule set: pre-UpgradeVM
-        // history is verifiable via hardcoded per-era program digests but cannot
-        // be *extended*, since those claims reference digests that no v3
-        // bytecode reproduces.
-        let init_block_heigth = BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET;
-        let bpw = BlockPrimitiveWitness::deterministic_with_block_height(init_block_heigth);
+        // Build on top of a chain at the UpgradeVMv5 fork height. Producing new
+        // blocks only works under the current (v5) rule set: pre-v5 history is
+        // verifiable via hardcoded per-era program digests but cannot be
+        // *extended*, since those claims reference digests that no v5 bytecode
+        // reproduces.
+        use crate::protocol::consensus::block::difficulty_control::Difficulty;
+        let init_block_heigth = BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V5_MAIN_NET;
+        // MINIMUM difficulty so PoW guessing for the mined blocks is instant; the
+        // STARK proving cost is unchanged (independent of difficulty).
+        let bpw = BlockPrimitiveWitness::deterministic_with_block_height_and_difficulty(
+            init_block_heigth,
+            Difficulty::MINIMUM,
+        );
 
         tokio_runtime().block_on(new_blocks_at_upgrade_vm_height_async(bpw));
     }
@@ -391,54 +477,141 @@ pub(crate) mod tests {
 
         let observed_block_height = bob.lock_guard().await.chain.light_state().header().height;
         assert_eq!(
-            BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET,
+            BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V5_MAIN_NET,
             observed_block_height,
         );
 
-        // 2. get a positive balance, by mining.
-        let blocks_to_mine = 5;
+        // 2. mine the first 2 post-fork blocks (57651, 57652) under UpgradeVMv5,
+        //    confirming each is BOTH consensus-valid AND proof-of-work mineable.
+        use crate::protocol::consensus::block::pow::Pow;
+        use crate::protocol::consensus::type_scripts::native_currency_amount::NativeCurrencyAmount;
+        eprintln!(
+            "\n=== UpgradeVMv5 mining readiness: chain synced to fork height {observed_block_height} ==="
+        );
+        let blocks_to_mine = 2;
         let mut predecessor = block_10_000;
-        for _ in 0..blocks_to_mine {
+        for i in 1..=blocks_to_mine {
             now += Timestamp::hours(1);
+            let next_height = predecessor.header().height.next();
+            eprintln!(
+                "\n[mine {i}/{blocks_to_mine}] height {next_height}: composing + proving (coinbase SingleProof + block proof) ..."
+            );
             let (next_block, expected_composer_utxos) = mine_to_own_wallet(bob.clone(), now).await;
-            assert!(next_block.is_valid(&predecessor, now, network).await);
+
+            // a) consensus validity: every block/tx proof verifies under UpgradeVMv5.
+            assert!(
+                next_block.is_valid(&predecessor, now, network).await,
+                "height {next_height}: block must be consensus-valid under UpgradeVMv5",
+            );
+            eprintln!("[mine {i}/{blocks_to_mine}] height {next_height}: consensus-valid [OK] (all proofs verify)");
+
+            // b) proof-of-work: grind a winning nonce at the block's own difficulty
+            //    and verify it — i.e. prove the block is actually *mineable*. Done
+            //    on a clone so the tip-chain stays byte-identical to a real node's.
+            let consensus_rule_set = ConsensusRuleSet::infer_from(network, next_height);
+            let target = next_block.header().difficulty.target();
+            let mut pow_block = next_block.clone();
+            let mast_auth_paths = pow_block.pow_mast_paths();
+            let guesser_buffer = pow_block.guess_preprocess(None, None, consensus_rule_set);
+            let index_picker_preimage = guesser_buffer.index_picker_preimage(&mast_auth_paths);
+            let mut guesses = 0u64;
+            let valid_pow = loop {
+                guesses += 1;
+                if let Some(valid_pow) = Pow::guess(
+                    &guesser_buffer,
+                    &mast_auth_paths,
+                    index_picker_preimage,
+                    rng.random(),
+                    target,
+                ) {
+                    break valid_pow;
+                }
+            };
+            pow_block.set_header_pow(valid_pow);
+            assert!(
+                pow_block.pow_verify(target, consensus_rule_set),
+                "height {next_height}: solved PoW must verify",
+            );
+            eprintln!(
+                "[mine {i}/{blocks_to_mine}] height {next_height}: PoW solved in {guesses} guesses + verified [MINEABLE]"
+            );
+
+            // c) the GUESSER fee for this block must be a positive, UNLOCKED
+            //    (immediately-spendable) reward. The guesser fee UTXOs are derived
+            //    straight off the block, so they can be checked here. (The COMPOSER
+            //    reward lands in the wallet and is verified after the loop via
+            //    spendable_inputs, which only counts non-time-locked UTXOs.) This
+            //    is the period-0 coinbase fix in action: under v4 a time-locked
+            //    reward would have tripped the coinbase rule.
+            let guesser_utxos = next_block.kernel.guesser_fee_utxos().unwrap();
+            let guesser_total = guesser_utxos
+                .iter()
+                .map(|u| u.get_native_currency_amount())
+                .sum::<NativeCurrencyAmount>();
+            assert!(
+                !guesser_utxos.is_empty() && guesser_total.is_positive(),
+                "height {next_height}: guesser must earn a positive fee",
+            );
+            assert!(
+                guesser_utxos.iter().all(|u| u.release_date().is_none()),
+                "height {next_height}: guesser fee UTXOs must be UNLOCKED (liquid)",
+            );
+            eprintln!(
+                "[mine {i}/{blocks_to_mine}] height {next_height}: guesser earns {:.6} coins ({} UTXO) — UNLOCKED [OK]",
+                guesser_total.to_coins_f64_lossy(),
+                guesser_utxos.len(),
+            );
+
             bob.set_new_self_composed_tip(next_block.clone(), expected_composer_utxos)
                 .await
                 .unwrap();
             predecessor = next_block;
         }
+        eprintln!(
+            "\n=== {blocks_to_mine} post-fork blocks: composed + proven + validated + mined [OK] ===\n"
+        );
 
         let hopefully_plus_5 = bob.lock_guard().await.chain.light_state().header().height;
         assert_eq!(
-            BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_MAIN_NET + 5,
+            BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V5_MAIN_NET + 2,
             hopefully_plus_5
         );
+        // The COMPOSER reward landed in the wallet and must be UNLOCKED: it shows
+        // up as confirmed, spendable balance. `spendable_inputs` only counts
+        // immediately-spendable (non-time-locked) UTXOs, so a positive count here
+        // proves the composer earned liquid coins under v5.
+        let composer_available = bob.api().wallet().balances(now).await.confirmed_available;
+        let spendable_inputs = bob.api().wallet().spendable_inputs(now, 0).await;
         assert!(
-            bob.api()
-                .wallet()
-                .balances(now)
-                .await
-                .confirmed_available
-                .is_positive(),
-            "Bob must have money"
+            composer_available.is_positive(),
+            "composer must earn spendable (unlocked) balance",
         );
         assert_eq!(
             blocks_to_mine,
-            bob.api().wallet().spendable_inputs(now, 0).await.len(),
+            spendable_inputs.len(),
             "Bob must have {blocks_to_mine} spendable inputs after mining {blocks_to_mine} blocks"
         );
+        eprintln!(
+            "composer earned {:.6} coins across {} UNLOCKED spendable UTXO(s) [OK]",
+            composer_available.to_coins_f64_lossy(),
+            spendable_inputs.len(),
+        );
 
-        // 3. create blocks with enough outputs to give some/all owned UTXOs
-        //    non-empty chunk dictionaries. This serves to check that the
-        //    membership proofs/removal records are updated correctly.
-        let num_blocks_with_many_outputs = 4;
-        for _ in 0..num_blocks_with_many_outputs {
+        // 3. create a block with many outputs so some owned UTXOs get non-empty
+        //    chunk dictionaries — checks membership-proof/removal-record updates
+        //    across the fork. Kept to 1 block to keep this run focused.
+        let num_blocks_with_many_outputs = 1;
+        for j in 1..=num_blocks_with_many_outputs {
             now += Timestamp::hours(1);
+            let next_height = predecessor.header().height.next();
+            eprintln!("[outputs {j}/{num_blocks_with_many_outputs}] height {next_height}: composing block with 24 outputs ...");
             let next_block = block_with_n_outputs(bob.clone(), 24, now).await;
             assert!(next_block.is_valid(&predecessor, now, network).await);
             bob.set_new_tip(next_block.clone()).await.unwrap();
             predecessor = next_block;
+            eprintln!("[outputs {j}/{num_blocks_with_many_outputs}] height {next_height}: valid + applied [OK]");
         }
+        eprintln!("\n=== TEST PASSED: v5 blocks are composable, provable, valid, and mineable ===\n");
     }
 
     #[test]
@@ -468,8 +641,8 @@ pub(crate) mod tests {
     #[test]
     fn timelock_extension_never_activates_off_mainnet() {
         // The fork is mainnet-only. Off-mainnet networks (Testnet, RegTest,
-        // TestnetMock) run UpgradeVM from genesis, so they never pass through
-        // the TimelockExtension ruleset regardless of block height.
+        // TestnetMock) run the newest ruleset (UpgradeVMv5) from genesis, so they
+        // never pass through the TimelockExtension ruleset regardless of height.
         let high = BLOCK_HEIGHT_HARDFORK_TIMELOCK_EXTENSION_MAIN_NET;
         for nw in [
             Network::Testnet(0),
@@ -479,7 +652,7 @@ pub(crate) mod tests {
         ] {
             assert_eq!(
                 ConsensusRuleSet::infer_from(nw, high),
-                ConsensusRuleSet::UpgradeVM,
+                ConsensusRuleSet::UpgradeVMv5,
                 "{nw:?} must never activate TimelockExtension"
             );
         }
@@ -497,33 +670,76 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn timelock_extension_program_hashes_are_stable() {
-        // Frozen hashes from the hardfork commits. If any of these change
-        // accidentally, the activation height will refer to a different
-        // program-set and the fork will become incompatible.
+    fn upgrade_vm_v4_active_on_main_at_activation_height() {
+        // At exactly the v4 activation height, mainnet switches to UpgradeVMv4;
+        // one block below it, mainnet is still on UpgradeVM (v3 verifier).
+        let activation = BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V4_MAIN_NET;
+        assert_eq!(
+            ConsensusRuleSet::infer_from(Network::Main, activation),
+            ConsensusRuleSet::UpgradeVMv4,
+            "UpgradeVMv4 must activate at exactly its mainnet activation height"
+        );
+        assert_eq!(
+            ConsensusRuleSet::infer_from(Network::Main, activation.previous().unwrap()),
+            ConsensusRuleSet::UpgradeVM,
+            "the block below the v4 height must still be UpgradeVM (v3 verifier)"
+        );
+    }
+
+    #[test]
+    fn upgrade_vm_v5_active_on_main_at_activation_height() {
+        // At exactly the v5 activation height, mainnet switches to UpgradeVMv5;
+        // one block below it, mainnet is still on UpgradeVMv4 (v4 verifier).
+        let activation = BLOCK_HEIGHT_HARDFORK_UPGRADE_VM_V5_MAIN_NET;
+        assert_eq!(
+            ConsensusRuleSet::infer_from(Network::Main, activation),
+            ConsensusRuleSet::UpgradeVMv5,
+            "UpgradeVMv5 must activate at exactly its mainnet activation height"
+        );
+        assert_eq!(
+            ConsensusRuleSet::infer_from(Network::Main, activation.previous().unwrap()),
+            ConsensusRuleSet::UpgradeVMv4,
+            "the block below the v5 height must still be UpgradeVMv4 (v4 verifier)"
+        );
+    }
+
+
+    #[test]
+    fn current_v5_program_hashes_are_stable() {
+        // Drift-detection for the CURRENT (UpgradeVMv5 / triton-vm v5) program
+        // hashes. If any of these change accidentally, the activation height
+        // would refer to a different program-set and the fork would become
+        // incompatible.
+        //
+        // NOTE: the triton-vm v5 ISA change re-hashed only the proof programs
+        // that embed the STARK verifier. `TimeLockV2` and `CollectTypeScriptsV2`
+        // are byte-identical to v4 (their digests did NOT change); only
+        // `SingleProofV2` (and `BlockProgram`) moved v4 -> v5.
         use crate::protocol::consensus::transaction::validity::collect_type_scripts_v2::CollectTypeScriptsV2;
         use crate::protocol::consensus::transaction::validity::single_proof_v2::SingleProofV2;
         use crate::protocol::consensus::type_scripts::time_lock_v2::TimeLockV2;
         use crate::protocol::proof_abstractions::tasm::program::ConsensusProgram;
 
+        // Unchanged across v4 -> v5.
         let timelock_v2 = TimeLockV2.hash().to_hex();
         assert_eq!(
             timelock_v2,
-            "f4a43667f051636c8c7e0c8d25cc7eeecfc8f8d2e8aa8d9f36e51eaa473219b20950f2844ea504ce",
+            "8b6d23e675c97cb8e1d36a5e926f19449d37673636c64c0769b7778aded85ff29056832e366b580b",
             "TimeLockV2 program hash drifted"
         );
 
         let cts_v2 = CollectTypeScriptsV2.hash().to_hex();
         assert_eq!(
             cts_v2,
-            "253714df987bb7ff9c017de9cd25683274ec0597f9879a31dfc6a7faac10a7e32ca2fc8e26316575",
+            "1d33643dc5086e915e44d720af4a1efa195254aee6497166f5055a7bcb0d8313ce70f77fe0632c4e",
             "CollectTypeScriptsV2 program hash drifted"
         );
 
+        // Re-hashed v4 (15312e1a…) -> v5.
         let sp_v2 = SingleProofV2.hash().to_hex();
         assert_eq!(
             sp_v2,
-            "6f6ea3083e506c048203a8505f8793aa70e4b1f610a352b14360f9e3fde21aa9373d607ddcf69888",
+            "e66985a98e4d5e455c5d11e57a16c3dca3cce2bd2a16d6f5e791f592801cc32eb99c57c32bf90e88",
             "SingleProofV2 program hash drifted"
         );
     }

@@ -67,17 +67,39 @@ impl NativeCurrency {
             .expect("legacy native-currency type-script-hash hex is valid")
     }
 
+    /// The `type_script_hash` that `NativeCurrency` coins carried during the
+    /// `UpgradeVM` era (triton-vm v3). The v4 VM upgrade re-hashed the program
+    /// again (and lifted the length-bound on single-word coin state), so coins
+    /// committed under v3 embed this digest and must be remapped to the current
+    /// `Self.hash()`. Computed by building `~/xnt-core-v3`.
+    pub const V3_TYPE_SCRIPT_HASH_HEX: &'static str =
+        "8bdf66e9f1bb47f07da2348e45dce5a56fb949e55907f10e565b95255598219c875cdf4975e30379";
+
+    /// See [`Self::V3_TYPE_SCRIPT_HASH_HEX`].
+    pub fn v3_type_script_hash() -> Digest {
+        Digest::try_from_hex(Self::V3_TYPE_SCRIPT_HASH_HEX)
+            .expect("v3 native-currency type-script-hash hex is valid")
+    }
+
+    /// Every historical (non-current) `type_script_hash` a committed
+    /// native-currency coin may carry: the pre-`UpgradeVM` legacy hash and the
+    /// `UpgradeVM` (v3) hash. The current `Self.hash()` is intentionally NOT
+    /// included.
+    pub fn historical_type_script_hashes() -> [Digest; 2] {
+        [Self::legacy_type_script_hash(), Self::v3_type_script_hash()]
+    }
+
     /// Whether `type_script_hash` identifies a native-currency coin: the current
-    /// program hash, or the pre-`UpgradeVM` legacy hash that pre-fork coins
-    /// (genesis premine, pre-fork guesser fees) still carry.
+    /// program hash, or any historical (pre-`UpgradeVM` legacy, or `UpgradeVM`
+    /// v3) hash that committed coins still carry.
     ///
-    /// The wallet must treat both as native currency so legacy UTXOs contribute
-    /// to balance and become selectable for spending — consistent with the
-    /// on-chain remap (`CollectTypeScriptsV2`) and the type script itself, which
-    /// already count legacy-tagged coins as native currency.
+    /// The wallet must treat all of them as native currency so legacy UTXOs
+    /// contribute to balance and become selectable for spending — consistent
+    /// with the on-chain remap (`CollectTypeScriptsV2`) and the type script
+    /// itself, which already count legacy-tagged coins as native currency.
     pub fn is_native_currency(type_script_hash: Digest) -> bool {
         type_script_hash == NativeCurrency.hash()
-            || type_script_hash == Self::legacy_type_script_hash()
+            || Self::historical_type_script_hashes().contains(&type_script_hash)
     }
 }
 
@@ -149,10 +171,12 @@ impl ConsensusProgram for NativeCurrency {
         let loop_utxos_add_amounts_label = library.import(Box::new(TotalAmountMainLoop {
             digest_source: DigestSource::StaticMemory(own_program_digest_alloc),
             release_date: coinbase_release_date_alloc,
-            // V3 REMAP: also count coins still tagged with the pre-UpgradeVM
-            // native-currency hash, so genesis-premine and pre-fork guesser-fee
-            // UTXOs remain spendable after the VM upgrade re-hashed the program.
-            legacy_digest: Some(Self::legacy_type_script_hash()),
+            // REMAP: also count coins still tagged with any historical
+            // native-currency hash — the pre-UpgradeVM legacy hash AND the
+            // UpgradeVM (v3) hash — so genesis-premine, pre-fork guesser-fee, and
+            // v3-era UTXOs all remain spendable after each VM upgrade re-hashed
+            // the program.
+            legacy_digests: Self::historical_type_script_hashes().to_vec(),
         }));
 
         let store_own_program_digest = triton_asm!(
@@ -815,11 +839,13 @@ pub mod tests {
             // get in the current program's hash digest
             let self_digest: Digest = tasm::own_program_digest();
 
-            // V3 REMAP: coins committed before the UpgradeVM fork carry this
-            // pre-upgrade native-currency hash; they are counted as native
-            // currency too. Mirrors the `legacy_digest` OR-match in the TASM
+            // REMAP: coins committed before/at the UpgradeVM fork carry
+            // historical native-currency hashes — the pre-UpgradeVM legacy hash
+            // and the UpgradeVM (v3) hash; they are counted as native currency
+            // too. Mirrors the `legacy_digests` OR-matches in the TASM
             // (`AddAllAmountsAndCheckTimeLock`).
             let legacy_digest: Digest = NativeCurrency::legacy_type_script_hash();
+            let v3_digest: Digest = NativeCurrency::v3_type_script_hash();
 
             // read standard input:
             //  - transaction kernel mast hash
@@ -897,6 +923,7 @@ pub mod tests {
                 while j < num_coins {
                     if utxo_i.coins()[j as usize].type_script_hash == self_digest
                         || utxo_i.coins()[j as usize].type_script_hash == legacy_digest
+                        || utxo_i.coins()[j as usize].type_script_hash == v3_digest
                     {
                         // decode state to get amount
                         let amount: NativeCurrencyAmount =
@@ -930,6 +957,7 @@ pub mod tests {
                     let coin_j = utxo_i.coins()[j as usize].clone();
                     if coin_j.type_script_hash == self_digest
                         || coin_j.type_script_hash == legacy_digest
+                        || coin_j.type_script_hash == v3_digest
                     {
                         // decode state to get amount
                         let amount: NativeCurrencyAmount =
@@ -1208,12 +1236,23 @@ pub mod tests {
         // the mix: 100 (legacy) + 250 (current) = 350 out, zero fee, balanced.
         let legacy_amount = NativeCurrencyAmount::from_nau(100);
         let current_amount = NativeCurrencyAmount::from_nau(250);
-        let total = legacy_amount.checked_add(&current_amount).unwrap();
+        let v3_amount = NativeCurrencyAmount::from_nau(70);
+        let total = legacy_amount
+            .checked_add(&current_amount)
+            .unwrap()
+            .checked_add(&v3_amount)
+            .unwrap();
 
         let legacy_input = Utxo::new(
             Digest::default(),
             legacy_amount
                 .to_native_coins_with_type_script_hash(NativeCurrency::legacy_type_script_hash()),
+        );
+        // UpgradeVM (v3)-era coin: must also be counted (`legacy_digests` includes
+        // the v3 hash), so 100 (legacy) + 250 (current) + 70 (v3) = 420 balances.
+        let v3_input = Utxo::new(
+            Digest::default(),
+            v3_amount.to_native_coins_with_type_script_hash(NativeCurrency::v3_type_script_hash()),
         );
         let current_input = Utxo::new_native_currency(Digest::default(), current_amount);
         let output = Utxo::new_native_currency(Digest::default(), total);
@@ -1230,7 +1269,7 @@ pub mod tests {
 
         let witness = NativeCurrencyWitness {
             salted_input_utxos: SaltedUtxos {
-                utxos: vec![legacy_input, current_input],
+                utxos: vec![legacy_input, v3_input, current_input],
                 salt: Default::default(),
             },
             salted_output_utxos: SaltedUtxos {
@@ -1847,6 +1886,8 @@ pub mod tests {
 
     test_program_snapshot!(
         NativeCurrency,
-        "8bdf66e9f1bb47f07da2348e45dce5a56fb949e55907f10e565b95255598219c875cdf4975e30379"
+        // v4 (UpgradeVMv4) program hash, after lifting the single-word length-bound
+        // and adding the v3-era native-currency hash to `legacy_digests`.
+        "11fdd6eba11eda86ac300e63efa28bf8636b1bdcc1c5588f0539e4efb03c665bc779aa347c92e2f4"
     );
 }

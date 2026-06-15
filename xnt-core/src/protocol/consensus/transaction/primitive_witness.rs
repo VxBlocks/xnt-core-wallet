@@ -723,7 +723,13 @@ pub mod neptune_arbitrary {
                         let output_utxos = Self::valid_tx_outputs_from_amounts_and_address_seeds(
                             &output_amounts,
                             &output_address_seeds,
-                            maybe_coinbase.map(|_| timestamp + MINING_REWARD_TIME_LOCK_PERIOD),
+                            // Honor MINING_REWARD_TIME_LOCK_PERIOD == 0: no coinbase
+                            // time-lock (matches the disabled coinbase rule, which
+                            // asserts the time-locked amount is zero).
+                            maybe_coinbase.and_then(|_| {
+                                (MINING_REWARD_TIME_LOCK_PERIOD > Timestamp::zero())
+                                    .then(|| timestamp + MINING_REWARD_TIME_LOCK_PERIOD)
+                            }),
                         );
                         Self::arbitrary_primitive_witness_with_timestamp_and(
                             &input_utxos,
@@ -1291,7 +1297,13 @@ mod tests {
                                 let mut timelocked_cb_acc = NativeCurrencyAmount::zero();
                                 for (utxo, amount) in utxos.iter_mut().zip_eq(amounts) {
                                     *utxo = utxo.new_with_native_currency_amount(amount);
-                                    if timelocked_cb_acc < min_timelocked_cb {
+                                    // Honor MINING_REWARD_TIME_LOCK_PERIOD == 0 (coinbase
+                                    // time-lock disabled): keep the coinbase liquid so the
+                                    // generated witness is valid under v4, matching the
+                                    // production/arbitrary-impls guards.
+                                    if timelocked_cb_acc < min_timelocked_cb
+                                        && MINING_REWARD_TIME_LOCK_PERIOD > Timestamp::zero()
+                                    {
                                         // Notice that we're in the general case timelocking more than we have to here.
                                         let max_timestamp = *timestamps.iter().max().unwrap();
                                         *utxo = utxo.clone().with_time_lock(
@@ -1531,17 +1543,26 @@ mod tests {
                         // If coinbase is set, add timelock type script, with
                         // sufficiently long timelock to output UTXOs for at
                         // least half the value.
+                        //
+                        // Honor MINING_REWARD_TIME_LOCK_PERIOD == 0 (coinbase
+                        // time-lock disabled): leave the coinbase fully liquid,
+                        // matching the NativeCurrency coinbase rule which asserts
+                        // the time-locked amount is zero. (Under v4 + size==1,
+                        // TimeLock.hash() == TIME_LOCK_HASH, so any time-locked
+                        // coinbase output would trip COINBASE_TIMELOCK_INSUFFICIENT.)
                         if let Some(coinbase) = coinbase {
-                            let release_date = timestamp + MINING_REWARD_TIME_LOCK_PERIOD;
-                            let mut timelocked = NativeCurrencyAmount::zero();
-                            let mut required_timelocked = coinbase;
-                            required_timelocked.div_two();
-                            let mut i = 0;
-                            while timelocked < required_timelocked {
-                                output_utxos[i] =
-                                    output_utxos[i].clone().with_time_lock(release_date);
-                                timelocked += output_utxos[i].get_native_currency_amount();
-                                i += 1;
+                            if MINING_REWARD_TIME_LOCK_PERIOD > Timestamp::zero() {
+                                let release_date = timestamp + MINING_REWARD_TIME_LOCK_PERIOD;
+                                let mut timelocked = NativeCurrencyAmount::zero();
+                                let mut required_timelocked = coinbase;
+                                required_timelocked.div_two();
+                                let mut i = 0;
+                                while timelocked < required_timelocked {
+                                    output_utxos[i] =
+                                        output_utxos[i].clone().with_time_lock(release_date);
+                                    timelocked += output_utxos[i].get_native_currency_amount();
+                                    i += 1;
+                                }
                             }
                         };
 
@@ -2016,6 +2037,112 @@ mod tests {
         assert!(
             primitive_witness.validate().await.is_err(),
             "still-locked legacy TimeLockV2-tagged UTXO must be rejected"
+        );
+    }
+
+    // ---- v3 (UpgradeVM-era) counterparts of the legacy end-to-end spend tests ----
+    // The legacy tests above only exercise the pre-v3 hash. These run the same full
+    // witness-generation + validation path through the *v3* remap layer (the one the
+    // v4 fork added), so a v3 hash missing from the fold/dispatch would be caught.
+
+    #[traced_test]
+    #[apply(shared_tokio_runtime)]
+    async fn v3_native_currency_input_primitive_witness_is_valid() {
+        use crate::protocol::consensus::transaction::lock_script::LockScript;
+        use crate::protocol::consensus::transaction::lock_script::LockScriptAndWitness;
+        use crate::protocol::consensus::type_scripts::native_currency::NativeCurrency;
+
+        let amount = NativeCurrencyAmount::coins(1);
+        let lock = LockScript::anyone_can_spend();
+        let lock_and_witness = LockScriptAndWitness::new(lock.program.clone());
+        let v3_input = Utxo::new(
+            lock.hash(),
+            amount.to_native_coins_with_type_script_hash(NativeCurrency::v3_type_script_hash()),
+        );
+        let output = Utxo::new_native_currency(lock.hash(), amount);
+
+        let mut test_runner = TestRunner::deterministic();
+        let primitive_witness = PrimitiveWitness::arbitrary_primitive_witness_with(
+            &[v3_input],
+            &[lock_and_witness],
+            &[output],
+            &[],
+            NativeCurrencyAmount::zero(),
+            None,
+        )
+        .new_tree(&mut test_runner)
+        .unwrap()
+        .current();
+
+        primitive_witness
+            .validate()
+            .await
+            .expect("tx spending a v3 native-currency UTXO must validate");
+    }
+
+    /// v3 counterpart of `legacy_timelock_input_primitive_witness_is_valid`: the v3
+    /// `TimeLock` hash must fold onto the V1 `TimeLock` program so the witness
+    /// builds and validates (lock enforcement for v3 lives in the V2 path, see
+    /// `time_lock_v2::tests::legacy_tagged_timelock_coins_are_lock_enforced`).
+    #[traced_test]
+    #[apply(shared_tokio_runtime)]
+    async fn v3_timelock_input_primitive_witness_is_valid() {
+        let amount = NativeCurrencyAmount::coins(1);
+        let now = Timestamp::now();
+        let v3_timelock = Coin {
+            type_script_hash: TimeLock::v3_type_script_hash(),
+            state: vec![(now - Timestamp::days(1)).0],
+        };
+        let primitive_witness = legacy_input_primitive_witness(
+            vec![Coin::new_native_currency(amount), v3_timelock],
+            amount,
+            now,
+        );
+        primitive_witness
+            .validate()
+            .await
+            .expect("tx spending a v3 TimeLock-tagged UTXO must validate");
+    }
+
+    /// v3 counterpart of `legacy_timelock_v2_input_primitive_witness_is_valid`: the
+    /// v3 `TimeLockV2` hash folds onto current `TimeLockV2` and the lock is enforced
+    /// end-to-end (released validates, still-locked is rejected).
+    #[traced_test]
+    #[apply(shared_tokio_runtime)]
+    async fn v3_timelock_v2_input_primitive_witness_is_valid() {
+        use crate::protocol::consensus::type_scripts::time_lock_v2::TimeLockV2;
+
+        let amount = NativeCurrencyAmount::coins(1);
+        let now = Timestamp::now();
+
+        // (a) released: release date in the past -> validates.
+        let released = Coin {
+            type_script_hash: TimeLockV2::v3_type_script_hash(),
+            state: vec![(now - Timestamp::days(1)).0],
+        };
+        let primitive_witness = legacy_input_primitive_witness(
+            vec![Coin::new_native_currency(amount), released],
+            amount,
+            now,
+        );
+        primitive_witness
+            .validate()
+            .await
+            .expect("released v3 TimeLockV2-tagged UTXO must validate");
+
+        // (b) still locked: release date in the future -> rejected.
+        let locked = Coin {
+            type_script_hash: TimeLockV2::v3_type_script_hash(),
+            state: vec![(now + Timestamp::days(1)).0],
+        };
+        let primitive_witness = legacy_input_primitive_witness(
+            vec![Coin::new_native_currency(amount), locked],
+            amount,
+            now,
+        );
+        assert!(
+            primitive_witness.validate().await.is_err(),
+            "still-locked v3 TimeLockV2-tagged UTXO must be rejected"
         );
     }
 

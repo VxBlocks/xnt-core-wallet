@@ -54,10 +54,13 @@ impl ComposerParameters {
     /// The coinbase amount is usually set to the block subsidy for this block
     /// height.
     ///
-    /// Will always produce outputs where at least half the amount is timelocked
-    /// for 3 years, since this is dictated by the consensus rules. The portion
-    /// of the entire block subsidy that goes to the composer is determined by
-    /// the `guesser_fee_fraction` field of the composer parameters.
+    /// While the coinbase time-lock is disabled
+    /// (`MINING_REWARD_TIME_LOCK_PERIOD == 0`) this produces a fully-liquid
+    /// coinbase: `CoinbaseDistribution` forbids time-locked outputs, and the
+    /// per-output time-lock below is additionally guarded on a non-zero period.
+    /// The portion of the entire block subsidy that goes to the composer is
+    /// determined by the `guesser_fee_fraction` field of the composer
+    /// parameters.
     ///
     /// The sum of the value of the outputs is guaranteed to not exceed the
     /// coinbase amount, since the guesser fee fraction is guaranteed to be in the
@@ -104,7 +107,12 @@ impl ComposerParameters {
                 owned,
             );
 
-            if coinbase_output.is_timelocked() {
+            // Honor MINING_REWARD_TIME_LOCK_PERIOD == 0 (coinbase time-lock
+            // disabled): produce a fully-liquid coinbase. Otherwise the composer
+            // would still add a 30-minute lock (`small_delta`), which the
+            // NativeCurrency coinbase rule (`assert timelocked == 0`) rejects.
+            if coinbase_output.is_timelocked() && MINING_REWARD_TIME_LOCK_PERIOD > Timestamp::zero()
+            {
                 let small_delta = Timestamp::minutes(30);
                 let release_date = timestamp + MINING_REWARD_TIME_LOCK_PERIOD + small_delta;
                 tx_output = tx_output.with_time_lock(release_date);

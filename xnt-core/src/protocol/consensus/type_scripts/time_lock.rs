@@ -68,6 +68,28 @@ impl TimeLock {
         Digest::try_from_hex(Self::LEGACY_TYPE_SCRIPT_HASH_HEX)
             .expect("legacy time-lock type-script-hash hex is valid")
     }
+
+    /// The `type_script_hash` that `TimeLock` coins carried during the
+    /// `UpgradeVM` era (triton-vm v3), where the program included the
+    /// length-bound. The v4 VM upgrade lifted that bound for single-word coin
+    /// state, re-hashing the program, so coins committed under v3 embed this
+    /// digest and must be remapped to the current `TimeLockV2.hash()`. Computed
+    /// by building `~/xnt-core-v3`.
+    pub const V3_TYPE_SCRIPT_HASH_HEX: &'static str =
+        "b35f7f6d9da987ae482f09b9dedf9178fc6e23e10d4320d02596e1a459a21627b1c04197d9e1c210";
+
+    /// See [`Self::V3_TYPE_SCRIPT_HASH_HEX`].
+    pub fn v3_type_script_hash() -> Digest {
+        Digest::try_from_hex(Self::V3_TYPE_SCRIPT_HASH_HEX)
+            .expect("v3 time-lock type-script-hash hex is valid")
+    }
+
+    /// Every historical (non-current) `type_script_hash` a committed `TimeLock`
+    /// coin may carry: the pre-`UpgradeVM` legacy hash and the `UpgradeVM` (v3)
+    /// hash. Both remap to the current `TimeLockV2.hash()`.
+    pub fn historical_type_script_hashes() -> [Digest; 2] {
+        [Self::legacy_type_script_hash(), Self::v3_type_script_hash()]
+    }
 }
 
 impl ConsensusProgram for TimeLock {
@@ -1332,7 +1354,8 @@ mod tests {
 
     test_program_snapshot!(
         TimeLock,
-        // snapshot taken from master on 2025-04-11 e2a712efc34f78c6a28801544418e7051127d284
-        "b35f7f6d9da987ae482f09b9dedf9178fc6e23e10d4320d02596e1a459a21627b1c04197d9e1c210"
+        // v4 (UpgradeVMv4) program hash. Under v4 the length-bound was lifted for
+        // single-word coin state, so this equals the pre-v3 legacy TimeLock hash.
+        "4b4d251947a07f9f2c016c1c271c04ce41013ff50031bd42854919be6e0e4849ebf931e856b542ad"
     );
 }

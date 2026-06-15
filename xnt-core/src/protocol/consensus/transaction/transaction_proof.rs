@@ -153,7 +153,9 @@ impl TransactionProof {
                     proof_collection.verify(kernel_mast_hash, network).await
                 }
                 ConsensusRuleSet::TimelockExtension
-                | ConsensusRuleSet::UpgradeVM => {
+                | ConsensusRuleSet::UpgradeVM
+                | ConsensusRuleSet::UpgradeVMv4
+                | ConsensusRuleSet::UpgradeVMv5 => {
                     proof_collection.verify_v2(kernel_mast_hash, network).await
                 }
             },
